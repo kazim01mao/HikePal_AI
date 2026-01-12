@@ -1,0 +1,9 @@
+{
+  "name": "HikePal",
+  "description": "A comprehensive hiking companion app featuring route planning, AI-powered guidance, and social hiking features.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
