@@ -3,6 +3,8 @@ import { Message, Route, Teammate, Track, Waypoint } from '../types';
 import { generateHikingAdvice } from '../services/geminiService';
 import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, MapPin, Thermometer, Wind, Mountain, Heart, Battery, Flame, Zap, Phone, Bell, ShieldAlert } from 'lucide-react';
 
+
+
 const L = (window as any).L;
 
 interface CompanionViewProps {
