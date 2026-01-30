@@ -1,0 +1,23 @@
+# 1. 巨大的依赖包 (绝对不能上传，因为太大了，且队友可以用 npm install 安装)
+node_modules/
+/node_modules
+
+# 2. 环境变量/密钥 (绝对不能上传，这是为了安全)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 3. Next.js 的构建文件 (这是生成的，不需要上传)
+/.next/
+/out/
+
+# 4. 系统垃圾文件 (比如 Mac 的缓存文件)
+.DS_Store
+Thumbs.db
+
+# 5. 日志文件
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
