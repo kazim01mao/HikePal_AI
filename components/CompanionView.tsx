@@ -2,14 +2,35 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Message, Route, Teammate, Track, Waypoint } from '../types';
 import { generateHikingAdvice } from '../services/geminiService';
 import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, MapPin, Thermometer, Wind, Mountain, Heart, Battery, Flame, Zap, Phone, Bell, ShieldAlert } from 'lucide-react';
-
-
+// --- 📍 修改 1：引入 supabase 客户端 ---
+// 请确保你之前已经在 src/utils/supabaseClient.js 创建好了这个文件
+import { supabase } from '../utils/supabaseClient';
 
 const L = (window as any).L;
+// --- 📍 修改 2：添加距离计算函数 (Haversine 公式) ---
+function getDistanceFromLatLonInM(lat1: number, lon1: number, lat2: number, lon2: number) {
+  var R = 6371e3; // 地球半径，单位：米
+  var dLat = deg2rad(lat2 - lat1);
+  var dLon = deg2rad(lon2 - lon1);
+  var a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat1)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  var d = R * c;
+  return d;
+}
+
+function deg2rad(deg: number) {
+  return deg * (Math.PI / 180);
+}
 
 interface CompanionViewProps {
   activeRoute: Route | null;
   onSaveTrack: (track: Track) => void;
+    // --- 📍 修改 3：新增 ID 参数 ---
+  userId: string;     // 当前用户的 ID
+  sessionId: string;  // 当前徒步活动的 ID
 }
 
 const MOCK_TEAMMATES_INIT: Teammate[] = [
@@ -19,7 +40,7 @@ const MOCK_TEAMMATES_INIT: Teammate[] = [
 
 const USER_START_POS: [number, number] = [22.2285, 114.2425];
 
-const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack }) => {
+const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack, userId, sessionId }) => {
   const [messages, setMessages] = useState<Message[]>([
     { id: '1', sender: 'ai', text: 'Hello! HikePal AI here. I see you are near the peak. I am tracking your location. How can I assist?', timestamp: new Date() }
   ]);
@@ -31,6 +52,9 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack 
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [trackName, setTrackName] = useState(activeRoute?.name || 'My Hike');
   const [showSOS, setShowSOS] = useState(false);
+  // --- 📍 修改 5：新增状态 ---
+  const [riskZones, setRiskZones] = useState<any[]>([]); // 存风险点
+  const lastUploadRef = useRef<number>(0); // 记录上次上传时间，防止刷屏
 
   // Risk Shield State
   const [deviceConnected, setDeviceConnected] = useState(true);
@@ -59,24 +83,102 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack 
   const timerRef = useRef<any>(null);
 
   // --- Real-time Simulation & Recording Logic ---
+  // --- 📍 修改 6：核心逻辑 - 加载风险点 ---
   useEffect(() => {
-    // Timer for elapsed time
-    if (isRecording) {
-        timerRef.current = setInterval(() => {
-            setElapsedTime(prev => prev + 1);
-            // Simulate Risk Shield Updates
-            setRiskStats(prev => ({
-                ...prev,
-                altitude: Math.max(0, prev.altitude + (Math.random() > 0.5 ? 1 : -1)),
-                heartRate: Math.min(180, Math.max(60, prev.heartRate + Math.floor(Math.random() * 5) - 2)),
-                calories: prev.calories + 0.5
-            }));
-        }, 1000);
-    } else {
-        if (timerRef.current) clearInterval(timerRef.current);
-    }
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [isRecording]);
+    const fetchRiskZones = async () => {
+      // 从 Supabase 获取风险点
+      const { data } = await supabase.from('risk_zones').select('*');
+      if (data) setRiskZones(data);
+    };
+    fetchRiskZones();
+  }, []);
+
+  // --- 📍 修改 7：核心逻辑 - 真实 GPS 追踪 & 电子围栏 & 上传 ---
+  useEffect(() => {
+    if (!isRecording) return; // 如果没按开始键，就不追踪
+
+    // 开启 GPS 监听
+    const geoId = navigator.geolocation.watchPosition(
+      async (position) => {
+        // 1. 获取真实坐标
+        const { latitude, longitude } = position.coords;
+        const newPos: [number, number] = [latitude, longitude];
+
+        // 2. 更新地图显示 (React State)
+        setUserPos(newPos);
+        setRecordedPath(prev => [...prev, newPos]);
+
+        // 3. 🛡️ 电子围栏检测 (每收到一个坐标就算一次)
+        if (riskZones.length > 0) {
+            riskZones.forEach(zone => {
+                const dist = getDistanceFromLatLonInM(latitude, longitude, zone.latitude, zone.longitude);
+                // 如果距离小于设定半径 (例如 50米)
+                if (dist < (zone.radius || 50)) {
+                    // 触发红色警告
+                    alert(`⚠️ 进入风险区域：${zone.type}！\n${zone.message}`);
+                    // 你也可以在这里调用 setShowSOS(true) 自动弹窗
+                }
+            });
+        }
+
+        // 4. ☁️ 上传到 Supabase (每 10 秒传一次)
+        const now = Date.now();
+        if (now - lastUploadRef.current > 10000) { 
+           lastUploadRef.current = now;
+           
+           console.log("正在上传位置...", latitude, longitude);
+           await supabase.from('locations').insert({
+             session_id: sessionId, 
+             user_id: userId,       
+             latitude: latitude,
+             longitude: longitude
+           });
+        }
+      },
+      (err) => console.error("GPS Error:", err),
+      { enableHighAccuracy: true } // 要求高精度 GPS
+    );
+
+    // 清理函数：组件卸载或停止录制时，关闭 GPS
+    return () => navigator.geolocation.clearWatch(geoId);
+  }, [isRecording, riskZones, sessionId, userId]);
+
+  // --- 📍 修改 8：核心逻辑 - 实时看队友 ---
+  useEffect(() => {
+      // 订阅数据库变化
+      const channel = supabase
+        .channel('teammate-tracker')
+        .on(
+            'postgres_changes',
+            { event: 'INSERT', schema: 'public', table: 'locations', filter: `session_id=eq.${sessionId}` },
+            (payload) => {
+                const newLoc = payload.new;
+                // 如果是自己传的数据，不管它
+                if (newLoc.user_id === userId) return;
+
+                // 更新队友位置状态
+                setTeammates(prev => {
+                    // 如果队友已在列表中，更新坐标
+                    const exists = prev.find(t => t.id === newLoc.user_id);
+                    if (exists) {
+                        return prev.map(t => t.id === newLoc.user_id ? { ...t, lat: newLoc.latitude, lng: newLoc.longitude } : t);
+                    }
+                    // 如果是新队友，加进来 (这里名字暂时写死，以后可以查表)
+                    return [...prev, {
+                        id: newLoc.user_id,
+                        name: 'New Teammate',
+                        lat: newLoc.latitude,
+                        lng: newLoc.longitude,
+                        status: 'active',
+                        avatar: 'https://picsum.photos/40/40'
+                    }];
+                });
+            }
+        )
+        .subscribe();
+
+      return () => { supabase.removeChannel(channel); };
+  }, [sessionId, userId]);
 
   useEffect(() => {
     // Simulate User & Teammate Movement every 1s
