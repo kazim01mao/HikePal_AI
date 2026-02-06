@@ -81,7 +81,16 @@ const App: React.FC = () => {
       case Tab.PLANNING:
         return <PlanningView routes={routes} onSelectRoute={handleRouteSelect} onCreateGroupHike={handleCreateGroupHike} />;
       case Tab.COMPANION:
-        return <CompanionView activeRoute={currentRoute} onSaveTrack={handleSaveTrack} />;
+        // 👇 这里我们需要填入真实的 UUID，否则 Supabase 可能会报错
+        return (
+          <CompanionView 
+            activeRoute={currentRoute} 
+            onSaveTrack={handleSaveTrack} 
+            // 暂时先写死一个 ID 用于测试
+            userId="013cb233-62e7-46b1-b25e-1f2f2c989f9e" 
+            sessionId="f8f62915-49e1-401d-a01f-8329b1b255b4"
+          />
+        );
       case Tab.HOME:
         return <HomeView myTracks={myTracks} myGroupHikes={myGroupHikes} onPublishTrack={handlePublishTrack} />;
       default:
