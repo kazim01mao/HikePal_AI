@@ -79,4 +79,6 @@ export interface GroupHike {
   maxMembers: number;
   currentMembers: number;
   isOrganizer: boolean;
+  // Optional list of member display names for UI (not required by core logic)
+  members?: string[];
 }

@@ -1,11 +1,28 @@
 import React, { useState } from 'react';
 import { Route, HikingEvent, GroupHike } from '../types';
-import { MapPin, Download, MessageSquare, Users, Calendar, ChevronRight, Star, Mountain, User, ArrowLeft, Plus, Flag, Recycle, ShieldAlert, Share2 } from 'lucide-react';
+import {
+  MapPin,
+  Download,
+  MessageSquare,
+  Users,
+  Calendar,
+  ChevronRight,
+  Star,
+  Mountain,
+  User,
+  ArrowLeft,
+  Plus,
+  Flag,
+  Recycle,
+  ShieldAlert,
+  Share2
+} from 'lucide-react';
 
 interface PlanningViewProps {
   routes: Route[];
   onSelectRoute: (route: Route) => void;
   onCreateGroupHike: (hike: GroupHike) => void;
+  onJoinGroupHike?: (group: GroupHike) => void;
 }
 
 const MOCK_EVENTS: HikingEvent[] = [
@@ -14,7 +31,35 @@ const MOCK_EVENTS: HikingEvent[] = [
     { id: 'e3', title: 'Trail Ribbon Placement Guide', type: 'guide', date: 'Sat, 19 Oct', location: 'Sai Kung', participants: 28, imageUrl: 'https://picsum.photos/400/200?random=12' },
 ];
 
-const PlanningView: React.FC<PlanningViewProps> = ({ routes, onSelectRoute, onCreateGroupHike }) => {
+const MOCK_NEARBY_GROUPS: GroupHike[] = [
+  {
+    id: 'g1',
+    title: 'Wilson Trail Sec 4',
+    description: 'Intermediate group aiming for steady pace and photo breaks.',
+    date: 'Leaving in 2 hours',
+    maxMembers: 5,
+    currentMembers: 3,
+    isOrganizer: false,
+    members: ['Jason', 'Mei', 'Tom']
+  },
+  {
+    id: 'g2',
+    title: 'Photography Slow Walk',
+    description: 'Very slow, photo-friendly walk suitable for beginners.',
+    date: 'Tomorrow morning',
+    maxMembers: 10,
+    currentMembers: 8,
+    isOrganizer: false,
+    members: ['Lily', 'Ken', 'Sara', 'Leo']
+  }
+];
+
+const PlanningView: React.FC<PlanningViewProps> = ({
+  routes,
+  onSelectRoute,
+  onCreateGroupHike,
+  onJoinGroupHike
+}) => {
   const [selectedCity] = useState('Hong Kong');
   const [activeRouteId, setActiveRouteId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'routes' | 'partner' | 'events'>('routes');
@@ -22,6 +67,8 @@ const PlanningView: React.FC<PlanningViewProps> = ({ routes, onSelectRoute, onCr
   // Partner Form State
   const [groupTitle, setGroupTitle] = useState('');
   const [groupDesc, setGroupDesc] = useState('');
+  const [nearbyGroups, setNearbyGroups] = useState<GroupHike[]>(MOCK_NEARBY_GROUPS);
+  const [selectedGroup, setSelectedGroup] = useState<GroupHike | null>(null);
 
   const activeRoute = routes.find(r => r.id === activeRouteId);
 
@@ -36,20 +83,44 @@ const PlanningView: React.FC<PlanningViewProps> = ({ routes, onSelectRoute, onCr
   };
 
   const handleCreateGroup = () => {
-      if(!groupTitle) return;
-      const newGroup: GroupHike = {
-          id: Date.now().toString(),
-          title: groupTitle,
-          description: groupDesc || 'Join us for a hike!',
-          date: 'Tomorrow, 08:00 AM',
-          maxMembers: 10,
-          currentMembers: 1,
-          isOrganizer: true
-      };
-      onCreateGroupHike(newGroup);
-      setGroupTitle('');
-      setGroupDesc('');
-      setViewMode('routes'); // Return to main or keep in partner view?
+    if (!groupTitle) return;
+    const newGroup: GroupHike = {
+      id: Date.now().toString(),
+      title: groupTitle,
+      description: groupDesc || 'Join us for a hike!',
+      date: 'Tomorrow, 08:00 AM',
+      maxMembers: 10,
+      currentMembers: 1,
+      isOrganizer: true,
+      members: ['You']
+    };
+    // 1) 写入全局「我的活动」
+    onCreateGroupHike(newGroup);
+    // 2) 立即插入当前页面的 Nearby 列表
+    setNearbyGroups(prev => [newGroup, ...prev]);
+    // 3) 重置表单，但保持在 partner 视图，方便直接看到新建的 group
+    setGroupTitle('');
+    setGroupDesc('');
+  };
+
+  const handleJoinGroup = (group: GroupHike) => {
+    // 不允许超过上限
+    if (group.currentMembers >= group.maxMembers) return;
+
+    const updatedGroup: GroupHike = {
+      ...group,
+      currentMembers: Math.min(group.currentMembers + 1, group.maxMembers)
+    };
+
+    // 本地更新「Nearby Groups」的人数
+    setNearbyGroups(prev =>
+      prev.map(g => (g.id === group.id ? updatedGroup : g))
+    );
+
+    // 通知上层，把这个活动也写入「My Activities」
+    if (onJoinGroupHike) {
+      onJoinGroupHike(updatedGroup);
+    }
   };
 
   // --- Sub-View: Events ---
@@ -146,27 +217,126 @@ const PlanningView: React.FC<PlanningViewProps> = ({ routes, onSelectRoute, onCr
                       </div>
                   </div>
 
-                  {/* Existing Groups Mock */}
+                  {/* Nearby Groups */}
                   <h3 className="font-bold text-gray-700 mb-3">Nearby Groups</h3>
                   <div className="space-y-3">
-                      <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center gap-4">
-                          <div className="w-12 h-12 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center font-bold text-lg">W</div>
-                          <div className="flex-1">
-                              <div className="font-bold text-gray-800">Wilson Trail Sec 4</div>
-                              <div className="text-xs text-gray-500">Leaving in 2 hours • 3/5 Members</div>
+                      {nearbyGroups.length === 0 && (
+                        <div className="bg-white p-4 rounded-xl border border-dashed border-gray-200 text-center text-xs text-gray-400">
+                          No nearby groups yet. Create one above!
+                        </div>
+                      )}
+
+                      {nearbyGroups.map(group => {
+                        const isOwner = group.isOrganizer;
+                        const initials = group.title
+                          .split(' ')
+                          .map(word => word[0])
+                          .join('')
+                          .slice(0, 2)
+                          .toUpperCase();
+
+                        return (
+                          <div
+                            key={group.id}
+                            onClick={() => setSelectedGroup(group)}
+                            className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center gap-4 cursor-pointer active:scale-[0.98] transition-transform relative"
+                          >
+                            <div className="w-12 h-12 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center font-bold text-lg">
+                              {initials}
+                            </div>
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <div className="font-bold text-gray-800 truncate">{group.title}</div>
+                                {isOwner && (
+                                  <span className="text-[10px] bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-bold">
+                                    OWNER
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs text-gray-500">
+                                {group.date} • {group.currentMembers}/{group.maxMembers} Members
+                              </div>
+                            </div>
+                            <button
+                              onClick={e => {
+                                e.stopPropagation();
+                                if (!isOwner) {
+                                  handleJoinGroup(group);
+                                }
+                              }}
+                              className={`px-3 py-1 rounded-lg text-xs font-bold ${
+                                isOwner
+                                  ? 'bg-gray-100 text-gray-400 cursor-default'
+                                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                              }`}
+                            >
+                              {isOwner ? 'Owner' : 'Join'}
+                            </button>
                           </div>
-                          <button className="px-3 py-1 bg-gray-100 text-gray-600 rounded-lg text-xs font-bold">Join</button>
-                      </div>
-                      <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center gap-4">
-                          <div className="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-lg">P</div>
-                          <div className="flex-1">
-                              <div className="font-bold text-gray-800">Photography Slow Walk</div>
-                              <div className="text-xs text-gray-500">Tomorrow • 8/10 Members</div>
-                          </div>
-                          <button className="px-3 py-1 bg-gray-100 text-gray-600 rounded-lg text-xs font-bold">Join</button>
-                      </div>
+                        );
+                      })}
                   </div>
               </div>
+
+              {/* Group detail modal */}
+              {selectedGroup && (
+                <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+                  <div className="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl">
+                    <div className="flex justify-between items-start mb-3">
+                      <h3 className="text-lg font-bold text-gray-900">{selectedGroup.title}</h3>
+                      <button
+                        onClick={() => setSelectedGroup(null)}
+                        className="text-gray-400 hover:text-gray-600 text-sm"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <p className="text-sm text-gray-600 mb-4">
+                      {selectedGroup.description}
+                    </p>
+
+                    <div className="mb-3">
+                      <div className="text-xs font-semibold text-gray-500 uppercase mb-1">
+                        Time
+                      </div>
+                      <div className="text-sm text-gray-800">{selectedGroup.date}</div>
+                    </div>
+
+                    <div className="mb-3">
+                      <div className="text-xs font-semibold text-gray-500 uppercase mb-1">
+                        Members
+                      </div>
+                      <div className="text-sm text-gray-800 mb-2">
+                        {selectedGroup.currentMembers}/{selectedGroup.maxMembers} hikers
+                      </div>
+                      {selectedGroup.members && (
+                        <ul className="space-y-1 text-sm text-gray-700 max-h-28 overflow-y-auto">
+                          {selectedGroup.members.map(name => (
+                            <li key={name} className="flex items-center gap-2">
+                              <div className="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center text-[10px] font-bold">
+                                {name[0]}
+                              </div>
+                              <span>{name}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        if (!selectedGroup.isOrganizer) {
+                          handleJoinGroup(selectedGroup);
+                        }
+                        setSelectedGroup(null);
+                      }}
+                      className="w-full bg-hike-green text-white py-2.5 rounded-xl font-bold text-sm shadow-md active:scale-95 transition-transform"
+                    >
+                      {selectedGroup.isOrganizer ? 'Close' : 'Join Group'}
+                    </button>
+                  </div>
+                </div>
+              )}
           </div>
       )
   }

@@ -72,14 +72,29 @@ const App: React.FC = () => {
   };
 
   const handleCreateGroupHike = (hike: GroupHike) => {
-      setMyGroupHikes(prev => [hike, ...prev]);
-      alert("Group Hike Created! It is now visible on your Profile.");
+    setMyGroupHikes(prev => [hike, ...prev]);
+    alert("Group Hike Created! It is now visible on your Profile.");
+  };
+
+  const handleJoinGroupHike = (group: GroupHike) => {
+    setMyGroupHikes(prev => {
+      // Avoid duplicates if already joined/created
+      if (prev.find(g => g.id === group.id)) return prev;
+      return [group, ...prev];
+    });
   };
 
   const renderContent = () => {
     switch (activeTab) {
       case Tab.PLANNING:
-        return <PlanningView routes={routes} onSelectRoute={handleRouteSelect} onCreateGroupHike={handleCreateGroupHike} />;
+        return (
+          <PlanningView
+            routes={routes}
+            onSelectRoute={handleRouteSelect}
+            onCreateGroupHike={handleCreateGroupHike}
+            onJoinGroupHike={handleJoinGroupHike}
+          />
+        );
       case Tab.COMPANION:
         // 👇 这里我们需要填入真实的 UUID，否则 Supabase 可能会报错
         return (
