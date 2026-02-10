@@ -1,11 +1,33 @@
 import React, { useState } from 'react';
 import { Route, HikingEvent, GroupHike } from '../types';
-import { MapPin, Download, MessageSquare, Users, Calendar, ChevronRight, Star, Mountain, User, ArrowLeft, Plus, Flag, Recycle, ShieldAlert, Share2 } from 'lucide-react';
+import {
+  MapPin,
+  Download,
+  MessageSquare,
+  Users,
+  Calendar,
+  ChevronRight,
+  Star,
+  Mountain,
+  User,
+  ArrowLeft,
+  Plus,
+  Flag,
+  Recycle,
+  ShieldAlert,
+  Share2
+} from 'lucide-react';
+import { supabase } from '../utils/supabaseClient';
 
 interface PlanningViewProps {
   routes: Route[];
   onSelectRoute: (route: Route) => void;
   onCreateGroupHike: (hike: GroupHike) => void;
+  onJoinGroupHike?: (group: GroupHike) => void;
+  // 当前登录用户，用于写入 hike_sessions.user_id
+  currentUserId: string;
+  // 确认出行后，通知上层开始 Companion（携带 sessionId）
+  onGroupConfirmed?: (sessionId: string) => void;
 }
 
 const MOCK_EVENTS: HikingEvent[] = [
@@ -14,7 +36,37 @@ const MOCK_EVENTS: HikingEvent[] = [
     { id: 'e3', title: 'Trail Ribbon Placement Guide', type: 'guide', date: 'Sat, 19 Oct', location: 'Sai Kung', participants: 28, imageUrl: 'https://picsum.photos/400/200?random=12' },
 ];
 
-const PlanningView: React.FC<PlanningViewProps> = ({ routes, onSelectRoute, onCreateGroupHike }) => {
+const MOCK_NEARBY_GROUPS: GroupHike[] = [
+  {
+    id: 'g1',
+    title: 'Wilson Trail Sec 4',
+    description: 'Intermediate group aiming for steady pace and photo breaks.',
+    date: 'Leaving in 2 hours',
+    maxMembers: 5,
+    currentMembers: 3,
+    isOrganizer: false,
+    members: ['Jason', 'Mei', 'Tom']
+  },
+  {
+    id: 'g2',
+    title: 'Photography Slow Walk',
+    description: 'Very slow, photo-friendly walk suitable for beginners.',
+    date: 'Tomorrow morning',
+    maxMembers: 10,
+    currentMembers: 8,
+    isOrganizer: false,
+    members: ['Lily', 'Ken', 'Sara', 'Leo']
+  }
+];
+
+const PlanningView: React.FC<PlanningViewProps> = ({
+  routes,
+  onSelectRoute,
+  onCreateGroupHike,
+  onJoinGroupHike,
+  currentUserId,
+  onGroupConfirmed
+}) => {
   const [selectedCity] = useState('Hong Kong');
   const [activeRouteId, setActiveRouteId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'routes' | 'partner' | 'events'>('routes');
@@ -22,6 +74,15 @@ const PlanningView: React.FC<PlanningViewProps> = ({ routes, onSelectRoute, onCr
   // Partner Form State
   const [groupTitle, setGroupTitle] = useState('');
   const [groupDesc, setGroupDesc] = useState('');
+  const [groupSize, setGroupSize] = useState<number | ''>('');
+  const [groupTime, setGroupTime] = useState('');
+  const [groupMeetingPoint, setGroupMeetingPoint] = useState('');
+  const [plannedDuration, setPlannedDuration] = useState('');
+  const [experienceLevel, setExperienceLevel] = useState<'first_time' | 'occasional' | 'advanced' | ''>('');
+  const [initialMood, setInitialMood] = useState('');
+  const [nearbyGroups, setNearbyGroups] = useState<GroupHike[]>(MOCK_NEARBY_GROUPS);
+  const [selectedGroup, setSelectedGroup] = useState<GroupHike | null>(null);
+  const [isConfirming, setIsConfirming] = useState(false);
 
   const activeRoute = routes.find(r => r.id === activeRouteId);
 
@@ -36,20 +97,52 @@ const PlanningView: React.FC<PlanningViewProps> = ({ routes, onSelectRoute, onCr
   };
 
   const handleCreateGroup = () => {
-      if(!groupTitle) return;
-      const newGroup: GroupHike = {
-          id: Date.now().toString(),
-          title: groupTitle,
-          description: groupDesc || 'Join us for a hike!',
-          date: 'Tomorrow, 08:00 AM',
-          maxMembers: 10,
-          currentMembers: 1,
-          isOrganizer: true
-      };
-      onCreateGroupHike(newGroup);
-      setGroupTitle('');
-      setGroupDesc('');
-      setViewMode('routes'); // Return to main or keep in partner view?
+    if (!groupTitle) return;
+    const size = typeof groupSize === 'number' ? groupSize : 4;
+    const newGroup: GroupHike = {
+      id: Date.now().toString(),
+      title: groupTitle,
+      description: groupDesc || 'Join us for a hike!',
+      date: groupTime || 'To be decided',
+      maxMembers: size || 4,
+      currentMembers: 1,
+      isOrganizer: true,
+      members: ['You'],
+      meetingPoint: groupMeetingPoint || 'To be decided',
+      startTime: groupTime,
+      companionCount: size,
+      status: 'draft'
+    };
+    // 1) 写入全局「我的活动」
+    onCreateGroupHike(newGroup);
+    // 2) 立即插入当前页面的 Nearby 列表
+    setNearbyGroups(prev => [newGroup, ...prev]);
+    // 3) 重置表单，但保持在 partner 视图，方便直接看到新建的 group
+    setGroupTitle('');
+    setGroupDesc('');
+    setGroupSize('');
+    setGroupTime('');
+    setGroupMeetingPoint('');
+  };
+
+  const handleJoinGroup = (group: GroupHike) => {
+    // 不允许超过上限
+    if (group.currentMembers >= group.maxMembers) return;
+
+    const updatedGroup: GroupHike = {
+      ...group,
+      currentMembers: Math.min(group.currentMembers + 1, group.maxMembers)
+    };
+
+    // 本地更新「Nearby Groups」的人数
+    setNearbyGroups(prev =>
+      prev.map(g => (g.id === group.id ? updatedGroup : g))
+    );
+
+    // 通知上层，把这个活动也写入「My Activities」
+    if (onJoinGroupHike) {
+      onJoinGroupHike(updatedGroup);
+    }
   };
 
   // --- Sub-View: Events ---
@@ -134,7 +227,89 @@ const PlanningView: React.FC<PlanningViewProps> = ({ routes, onSelectRoute, onCr
                                   className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500 h-20 resize-none"
                               />
                           </div>
-                          <div className="flex gap-2 pt-2">
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-xs text-gray-500 font-bold uppercase">Group Size</label>
+                              <input
+                                type="number"
+                                min={1}
+                                max={20}
+                                value={groupSize}
+                                onChange={e => {
+                                  const v = e.target.value;
+                                  setGroupSize(v === '' ? '' : Number(v));
+                                }}
+                                placeholder="e.g. 4"
+                                className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-gray-500 font-bold uppercase">Start Time</label>
+                              <input
+                                type="text"
+                                value={groupTime}
+                                onChange={e => setGroupTime(e.target.value)}
+                                placeholder="Tomorrow 08:00"
+                                className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500"
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-xs text-gray-500 font-bold uppercase">Meeting Point</label>
+                            <input
+                              type="text"
+                              value={groupMeetingPoint}
+                              onChange={e => setGroupMeetingPoint(e.target.value)}
+                              placeholder="e.g. Exit B, Central MTR"
+                              className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500"
+                            />
+                          </div>
+                          {/* Pre-hike planning extra fields */}
+                          <div className="mt-2 p-3 bg-orange-50/60 rounded-xl border border-dashed border-orange-200 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-orange-700 uppercase">
+                                Pre-hike Status
+                              </span>
+                              <span className="text-[10px] text-orange-500">
+                                Optional but recommended
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="text-xs text-gray-500 font-bold uppercase">Planned Duration</label>
+                                <input
+                                  type="text"
+                                  value={plannedDuration}
+                                  onChange={e => setPlannedDuration(e.target.value)}
+                                  placeholder="e.g. 4h 30m"
+                                  className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500 bg-transparent text-sm"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-xs text-gray-500 font-bold uppercase">Experience Level</label>
+                                <select
+                                  value={experienceLevel}
+                                  onChange={e => setExperienceLevel(e.target.value as any)}
+                                  className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500 bg-transparent text-sm"
+                                >
+                                  <option value="">Select</option>
+                                  <option value="first_time">First-time</option>
+                                  <option value="occasional">Occasional</option>
+                                  <option value="advanced">Advanced</option>
+                                </select>
+                              </div>
+                            </div>
+                            <div>
+                              <label className="text-xs text-gray-500 font-bold uppercase">Initial Mood / Condition</label>
+                              <textarea
+                                value={initialMood}
+                                onChange={e => setInitialMood(e.target.value)}
+                                placeholder="How do you feel today? Any concerns, injuries, or notes for guardians/AI?"
+                                className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500 h-16 resize-none text-sm"
+                              />
+                            </div>
+                          </div>
+                          <div className="flex gap-2 pt-3">
                               <button onClick={handleCreateGroup} className="flex-1 bg-orange-500 text-white py-3 rounded-xl font-bold shadow-lg shadow-orange-200">
                                   Create & Publish
                               </button>
@@ -146,27 +321,185 @@ const PlanningView: React.FC<PlanningViewProps> = ({ routes, onSelectRoute, onCr
                       </div>
                   </div>
 
-                  {/* Existing Groups Mock */}
+                  {/* Nearby Groups */}
                   <h3 className="font-bold text-gray-700 mb-3">Nearby Groups</h3>
                   <div className="space-y-3">
-                      <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center gap-4">
-                          <div className="w-12 h-12 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center font-bold text-lg">W</div>
-                          <div className="flex-1">
-                              <div className="font-bold text-gray-800">Wilson Trail Sec 4</div>
-                              <div className="text-xs text-gray-500">Leaving in 2 hours • 3/5 Members</div>
+                      {nearbyGroups.length === 0 && (
+                        <div className="bg-white p-4 rounded-xl border border-dashed border-gray-200 text-center text-xs text-gray-400">
+                          No nearby groups yet. Create one above!
+                        </div>
+                      )}
+
+                      {nearbyGroups.map(group => {
+                        const isOwner = group.isOrganizer;
+                        const isConfirmed = group.status === 'confirmed';
+                        const initials = group.title
+                          .split(' ')
+                          .map(word => word[0])
+                          .join('')
+                          .slice(0, 2)
+                          .toUpperCase();
+
+                        return (
+                          <div
+                            key={group.id}
+                            onClick={() => setSelectedGroup(group)}
+                            className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center gap-4 cursor-pointer active:scale-[0.98] transition-transform relative"
+                          >
+                            <div className="w-12 h-12 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center font-bold text-lg">
+                              {initials}
+                            </div>
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <div className="font-bold text-gray-800 truncate">{group.title}</div>
+                                {isOwner && (
+                                  <span className="text-[10px] bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-bold">
+                                    OWNER
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs text-gray-500">
+                                {group.date} • {group.currentMembers}/{group.maxMembers} Members
+                              </div>
+                            </div>
+                            <button
+                              onClick={e => {
+                                e.stopPropagation();
+                                if (!isOwner && !isConfirmed) {
+                                  handleJoinGroup(group);
+                                }
+                              }}
+                              className={`px-3 py-1 rounded-lg text-xs font-bold ${
+                                isOwner || isConfirmed
+                                  ? 'bg-gray-100 text-gray-400 cursor-default'
+                                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                              }`}
+                            >
+                              {isConfirmed ? 'Locked' : isOwner ? 'Owner' : 'Join'}
+                            </button>
                           </div>
-                          <button className="px-3 py-1 bg-gray-100 text-gray-600 rounded-lg text-xs font-bold">Join</button>
-                      </div>
-                      <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center gap-4">
-                          <div className="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-lg">P</div>
-                          <div className="flex-1">
-                              <div className="font-bold text-gray-800">Photography Slow Walk</div>
-                              <div className="text-xs text-gray-500">Tomorrow • 8/10 Members</div>
-                          </div>
-                          <button className="px-3 py-1 bg-gray-100 text-gray-600 rounded-lg text-xs font-bold">Join</button>
-                      </div>
+                        );
+                      })}
                   </div>
               </div>
+
+              {/* Group detail modal */}
+              {selectedGroup && (
+                <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+                  <div className="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl">
+                    <div className="flex justify-between items-start mb-3">
+                      <h3 className="text-lg font-bold text-gray-900">{selectedGroup.title}</h3>
+                      <button
+                        onClick={() => setSelectedGroup(null)}
+                        className="text-gray-400 hover:text-gray-600 text-sm"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <p className="text-sm text-gray-600 mb-4">
+                      {selectedGroup.description}
+                    </p>
+
+                    <div className="mb-3">
+                      <div className="text-xs font-semibold text-gray-500 uppercase mb-1">
+                        Time
+                      </div>
+                      <div className="text-sm text-gray-800">
+                        {selectedGroup.startTime || selectedGroup.date}
+                      </div>
+                    </div>
+
+                    <div className="mb-3">
+                      <div className="text-xs text-gray-500 font-semibold uppercase mb-1">
+                        Meeting Point
+                      </div>
+                      <div className="text-sm text-gray-800">
+                        {selectedGroup.meetingPoint || 'To be decided'}
+                      </div>
+                    </div>
+
+                    <div className="mb-3">
+                      <div className="text-xs font-semibold text-gray-500 uppercase mb-1">
+                        Members
+                      </div>
+                      <div className="text-sm text-gray-800 mb-2">
+                        {selectedGroup.currentMembers}/{selectedGroup.maxMembers} hikers
+                      </div>
+                      {selectedGroup.members && (
+                        <ul className="space-y-1 text-sm text-gray-700 max-h-28 overflow-y-auto">
+                          {selectedGroup.members.map(name => (
+                            <li key={name} className="flex items-center gap-2">
+                              <div className="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center text-[10px] font-bold">
+                                {name[0]}
+                              </div>
+                              <span>{name}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <div className="flex gap-3 mt-4">
+                      <button
+                        disabled={selectedGroup.status === 'confirmed' || isConfirming}
+                        onClick={async () => {
+                          if (selectedGroup.status === 'confirmed') return;
+                          try {
+                            setIsConfirming(true);
+                            // 将队伍状态设为 confirmed（本地 UI 锁定）
+                            setNearbyGroups(prev =>
+                              prev.map(g =>
+                                g.id === selectedGroup.id ? { ...g, status: 'confirmed' } : g
+                              )
+                            );
+
+                            // 写入 Supabase 的 hike_sessions，用于 CompanionView 安全守护
+                            const { data, error } = await supabase
+                              .from('hike_sessions')
+                              .insert({
+                                user_id: currentUserId,
+                                status: 'planning',
+                                planned_duration: plannedDuration || selectedGroup.startTime || selectedGroup.date,
+                                companion_count: selectedGroup.companionCount || selectedGroup.currentMembers,
+                                experience_level: experienceLevel || null,
+                                initial_mood: initialMood || selectedGroup.description,
+                                share_token: crypto.randomUUID(),
+                                route_id: null,
+                                team_id: null
+                              })
+                              .select('id')
+                              .single();
+
+                            if (!error && data?.id && onGroupConfirmed) {
+                              onGroupConfirmed(data.id);
+                            }
+                          } finally {
+                            setIsConfirming(false);
+                            setSelectedGroup(null);
+                          }
+                        }}
+                        className={`flex-1 py-2.5 rounded-xl font-bold text-sm shadow-md active:scale-95 transition-transform ${
+                          selectedGroup.status === 'confirmed'
+                            ? 'bg-gray-200 text-gray-500 cursor-default'
+                            : 'bg-hike-green text-white'
+                        }`}
+                      >
+                        {selectedGroup.status === 'confirmed'
+                          ? 'Locked In'
+                          : isConfirming
+                          ? 'Confirming...'
+                          : 'Start Hike'}
+                      </button>
+                      <button
+                        onClick={() => setSelectedGroup(null)}
+                        className="flex-1 py-2.5 rounded-xl font-bold text-sm border border-gray-200 text-gray-700"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
           </div>
       )
   }

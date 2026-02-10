@@ -32,6 +32,8 @@ const MOCK_ROUTES: Route[] = [
   }
 ];
 
+const CURRENT_USER_ID = '013cb233-62e7-46b1-b25e-1f2f2c989f9e'; // TODO: replace with real auth user id
+
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>(Tab.PLANNING);
   const [currentRoute, setCurrentRoute] = useState<Route | null>(null);
@@ -40,6 +42,7 @@ const App: React.FC = () => {
   const [routes, setRoutes] = useState<Route[]>(MOCK_ROUTES);
   const [myTracks, setMyTracks] = useState<Track[]>([]);
   const [myGroupHikes, setMyGroupHikes] = useState<GroupHike[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
   const handleRouteSelect = (route: Route) => {
     setCurrentRoute(route);
@@ -72,23 +75,41 @@ const App: React.FC = () => {
   };
 
   const handleCreateGroupHike = (hike: GroupHike) => {
-      setMyGroupHikes(prev => [hike, ...prev]);
-      alert("Group Hike Created! It is now visible on your Profile.");
+    setMyGroupHikes(prev => [hike, ...prev]);
+    alert("Group Hike Created! It is now visible on your Profile.");
+  };
+
+  const handleJoinGroupHike = (group: GroupHike) => {
+    setMyGroupHikes(prev => {
+      // Avoid duplicates if already joined/created
+      if (prev.find(g => g.id === group.id)) return prev;
+      return [group, ...prev];
+    });
   };
 
   const renderContent = () => {
     switch (activeTab) {
       case Tab.PLANNING:
-        return <PlanningView routes={routes} onSelectRoute={handleRouteSelect} onCreateGroupHike={handleCreateGroupHike} />;
+        return (
+          <PlanningView
+            routes={routes}
+            onSelectRoute={handleRouteSelect}
+            onCreateGroupHike={handleCreateGroupHike}
+            onJoinGroupHike={handleJoinGroupHike}
+            currentUserId={CURRENT_USER_ID}
+            onGroupConfirmed={(sessionId) => {
+              setActiveSessionId(sessionId);
+              setActiveTab(Tab.COMPANION);
+            }}
+          />
+        );
       case Tab.COMPANION:
-        // 👇 这里我们需要填入真实的 UUID，否则 Supabase 可能会报错
         return (
           <CompanionView 
             activeRoute={currentRoute} 
             onSaveTrack={handleSaveTrack} 
-            // 暂时先写死一个 ID 用于测试
-            userId="013cb233-62e7-46b1-b25e-1f2f2c989f9e" 
-            sessionId="f8f62915-49e1-401d-a01f-8329b1b255b4"
+            userId={CURRENT_USER_ID}
+            sessionId={activeSessionId || 'f8f62915-49e1-401d-a01f-8329b1b255b4'}
           />
         );
       case Tab.HOME:
