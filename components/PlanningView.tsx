@@ -17,12 +17,17 @@ import {
   ShieldAlert,
   Share2
 } from 'lucide-react';
+import { supabase } from '../utils/supabaseClient';
 
 interface PlanningViewProps {
   routes: Route[];
   onSelectRoute: (route: Route) => void;
   onCreateGroupHike: (hike: GroupHike) => void;
   onJoinGroupHike?: (group: GroupHike) => void;
+  // 当前登录用户，用于写入 hike_sessions.user_id
+  currentUserId: string;
+  // 确认出行后，通知上层开始 Companion（携带 sessionId）
+  onGroupConfirmed?: (sessionId: string) => void;
 }
 
 const MOCK_EVENTS: HikingEvent[] = [
@@ -58,7 +63,9 @@ const PlanningView: React.FC<PlanningViewProps> = ({
   routes,
   onSelectRoute,
   onCreateGroupHike,
-  onJoinGroupHike
+  onJoinGroupHike,
+  currentUserId,
+  onGroupConfirmed
 }) => {
   const [selectedCity] = useState('Hong Kong');
   const [activeRouteId, setActiveRouteId] = useState<string | null>(null);
@@ -67,8 +74,15 @@ const PlanningView: React.FC<PlanningViewProps> = ({
   // Partner Form State
   const [groupTitle, setGroupTitle] = useState('');
   const [groupDesc, setGroupDesc] = useState('');
+  const [groupSize, setGroupSize] = useState<number | ''>('');
+  const [groupTime, setGroupTime] = useState('');
+  const [groupMeetingPoint, setGroupMeetingPoint] = useState('');
+  const [plannedDuration, setPlannedDuration] = useState('');
+  const [experienceLevel, setExperienceLevel] = useState<'first_time' | 'occasional' | 'advanced' | ''>('');
+  const [initialMood, setInitialMood] = useState('');
   const [nearbyGroups, setNearbyGroups] = useState<GroupHike[]>(MOCK_NEARBY_GROUPS);
   const [selectedGroup, setSelectedGroup] = useState<GroupHike | null>(null);
+  const [isConfirming, setIsConfirming] = useState(false);
 
   const activeRoute = routes.find(r => r.id === activeRouteId);
 
@@ -84,15 +98,20 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
   const handleCreateGroup = () => {
     if (!groupTitle) return;
+    const size = typeof groupSize === 'number' ? groupSize : 4;
     const newGroup: GroupHike = {
       id: Date.now().toString(),
       title: groupTitle,
       description: groupDesc || 'Join us for a hike!',
-      date: 'Tomorrow, 08:00 AM',
-      maxMembers: 10,
+      date: groupTime || 'To be decided',
+      maxMembers: size || 4,
       currentMembers: 1,
       isOrganizer: true,
-      members: ['You']
+      members: ['You'],
+      meetingPoint: groupMeetingPoint || 'To be decided',
+      startTime: groupTime,
+      companionCount: size,
+      status: 'draft'
     };
     // 1) 写入全局「我的活动」
     onCreateGroupHike(newGroup);
@@ -101,6 +120,9 @@ const PlanningView: React.FC<PlanningViewProps> = ({
     // 3) 重置表单，但保持在 partner 视图，方便直接看到新建的 group
     setGroupTitle('');
     setGroupDesc('');
+    setGroupSize('');
+    setGroupTime('');
+    setGroupMeetingPoint('');
   };
 
   const handleJoinGroup = (group: GroupHike) => {
@@ -205,7 +227,89 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                   className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500 h-20 resize-none"
                               />
                           </div>
-                          <div className="flex gap-2 pt-2">
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-xs text-gray-500 font-bold uppercase">Group Size</label>
+                              <input
+                                type="number"
+                                min={1}
+                                max={20}
+                                value={groupSize}
+                                onChange={e => {
+                                  const v = e.target.value;
+                                  setGroupSize(v === '' ? '' : Number(v));
+                                }}
+                                placeholder="e.g. 4"
+                                className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-gray-500 font-bold uppercase">Start Time</label>
+                              <input
+                                type="text"
+                                value={groupTime}
+                                onChange={e => setGroupTime(e.target.value)}
+                                placeholder="Tomorrow 08:00"
+                                className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500"
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-xs text-gray-500 font-bold uppercase">Meeting Point</label>
+                            <input
+                              type="text"
+                              value={groupMeetingPoint}
+                              onChange={e => setGroupMeetingPoint(e.target.value)}
+                              placeholder="e.g. Exit B, Central MTR"
+                              className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500"
+                            />
+                          </div>
+                          {/* Pre-hike planning extra fields */}
+                          <div className="mt-2 p-3 bg-orange-50/60 rounded-xl border border-dashed border-orange-200 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-orange-700 uppercase">
+                                Pre-hike Status
+                              </span>
+                              <span className="text-[10px] text-orange-500">
+                                Optional but recommended
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="text-xs text-gray-500 font-bold uppercase">Planned Duration</label>
+                                <input
+                                  type="text"
+                                  value={plannedDuration}
+                                  onChange={e => setPlannedDuration(e.target.value)}
+                                  placeholder="e.g. 4h 30m"
+                                  className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500 bg-transparent text-sm"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-xs text-gray-500 font-bold uppercase">Experience Level</label>
+                                <select
+                                  value={experienceLevel}
+                                  onChange={e => setExperienceLevel(e.target.value as any)}
+                                  className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500 bg-transparent text-sm"
+                                >
+                                  <option value="">Select</option>
+                                  <option value="first_time">First-time</option>
+                                  <option value="occasional">Occasional</option>
+                                  <option value="advanced">Advanced</option>
+                                </select>
+                              </div>
+                            </div>
+                            <div>
+                              <label className="text-xs text-gray-500 font-bold uppercase">Initial Mood / Condition</label>
+                              <textarea
+                                value={initialMood}
+                                onChange={e => setInitialMood(e.target.value)}
+                                placeholder="How do you feel today? Any concerns, injuries, or notes for guardians/AI?"
+                                className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-orange-500 h-16 resize-none text-sm"
+                              />
+                            </div>
+                          </div>
+                          <div className="flex gap-2 pt-3">
                               <button onClick={handleCreateGroup} className="flex-1 bg-orange-500 text-white py-3 rounded-xl font-bold shadow-lg shadow-orange-200">
                                   Create & Publish
                               </button>
@@ -228,6 +332,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
                       {nearbyGroups.map(group => {
                         const isOwner = group.isOrganizer;
+                        const isConfirmed = group.status === 'confirmed';
                         const initials = group.title
                           .split(' ')
                           .map(word => word[0])
@@ -260,17 +365,17 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                             <button
                               onClick={e => {
                                 e.stopPropagation();
-                                if (!isOwner) {
+                                if (!isOwner && !isConfirmed) {
                                   handleJoinGroup(group);
                                 }
                               }}
                               className={`px-3 py-1 rounded-lg text-xs font-bold ${
-                                isOwner
+                                isOwner || isConfirmed
                                   ? 'bg-gray-100 text-gray-400 cursor-default'
                                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                               }`}
                             >
-                              {isOwner ? 'Owner' : 'Join'}
+                              {isConfirmed ? 'Locked' : isOwner ? 'Owner' : 'Join'}
                             </button>
                           </div>
                         );
@@ -299,7 +404,18 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                       <div className="text-xs font-semibold text-gray-500 uppercase mb-1">
                         Time
                       </div>
-                      <div className="text-sm text-gray-800">{selectedGroup.date}</div>
+                      <div className="text-sm text-gray-800">
+                        {selectedGroup.startTime || selectedGroup.date}
+                      </div>
+                    </div>
+
+                    <div className="mb-3">
+                      <div className="text-xs text-gray-500 font-semibold uppercase mb-1">
+                        Meeting Point
+                      </div>
+                      <div className="text-sm text-gray-800">
+                        {selectedGroup.meetingPoint || 'To be decided'}
+                      </div>
                     </div>
 
                     <div className="mb-3">
@@ -323,17 +439,64 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                       )}
                     </div>
 
-                    <button
-                      onClick={() => {
-                        if (!selectedGroup.isOrganizer) {
-                          handleJoinGroup(selectedGroup);
-                        }
-                        setSelectedGroup(null);
-                      }}
-                      className="w-full bg-hike-green text-white py-2.5 rounded-xl font-bold text-sm shadow-md active:scale-95 transition-transform"
-                    >
-                      {selectedGroup.isOrganizer ? 'Close' : 'Join Group'}
-                    </button>
+                    <div className="flex gap-3 mt-4">
+                      <button
+                        disabled={selectedGroup.status === 'confirmed' || isConfirming}
+                        onClick={async () => {
+                          if (selectedGroup.status === 'confirmed') return;
+                          try {
+                            setIsConfirming(true);
+                            // 将队伍状态设为 confirmed（本地 UI 锁定）
+                            setNearbyGroups(prev =>
+                              prev.map(g =>
+                                g.id === selectedGroup.id ? { ...g, status: 'confirmed' } : g
+                              )
+                            );
+
+                            // 写入 Supabase 的 hike_sessions，用于 CompanionView 安全守护
+                            const { data, error } = await supabase
+                              .from('hike_sessions')
+                              .insert({
+                                user_id: currentUserId,
+                                status: 'planning',
+                                planned_duration: plannedDuration || selectedGroup.startTime || selectedGroup.date,
+                                companion_count: selectedGroup.companionCount || selectedGroup.currentMembers,
+                                experience_level: experienceLevel || null,
+                                initial_mood: initialMood || selectedGroup.description,
+                                share_token: crypto.randomUUID(),
+                                route_id: null,
+                                team_id: null
+                              })
+                              .select('id')
+                              .single();
+
+                            if (!error && data?.id && onGroupConfirmed) {
+                              onGroupConfirmed(data.id);
+                            }
+                          } finally {
+                            setIsConfirming(false);
+                            setSelectedGroup(null);
+                          }
+                        }}
+                        className={`flex-1 py-2.5 rounded-xl font-bold text-sm shadow-md active:scale-95 transition-transform ${
+                          selectedGroup.status === 'confirmed'
+                            ? 'bg-gray-200 text-gray-500 cursor-default'
+                            : 'bg-hike-green text-white'
+                        }`}
+                      >
+                        {selectedGroup.status === 'confirmed'
+                          ? 'Locked In'
+                          : isConfirming
+                          ? 'Confirming...'
+                          : 'Start Hike'}
+                      </button>
+                      <button
+                        onClick={() => setSelectedGroup(null)}
+                        className="flex-1 py-2.5 rounded-xl font-bold text-sm border border-gray-200 text-gray-700"
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}

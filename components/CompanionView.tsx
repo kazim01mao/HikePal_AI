@@ -5,8 +5,6 @@ import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Drop
 // --- 📍 修改 1：引入 supabase 客户端 ---
 // 请确保你之前已经在 src/utils/supabaseClient.js 创建好了这个文件
 import { supabase } from '../utils/supabaseClient';
-
-const L = (window as any).L;
 // --- 📍 修改 2：添加距离计算函数 (Haversine 公式) ---
 function getDistanceFromLatLonInM(lat1: number, lon1: number, lat2: number, lon2: number) {
   var R = 6371e3; // 地球半径，单位：米
@@ -72,6 +70,13 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
   const [teammates, setTeammates] = useState<Teammate[]>(MOCK_TEAMMATES_INIT);
   const [recordedPath, setRecordedPath] = useState<[number, number][]>([USER_START_POS]);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
+  const [showAddNote, setShowAddNote] = useState(false);
+  const [noteContent, setNoteContent] = useState('');
+  const [noteType, setNoteType] = useState<'user_note' | 'cultural_info'>('user_note');
+  const [showReportIssue, setShowReportIssue] = useState(false);
+  const [issueType, setIssueType] = useState<'blockage' | 'trash' | 'safety_hazard'>('blockage');
+  const [issueDescription, setIssueDescription] = useState('');
+  const [saveChatLogs, setSaveChatLogs] = useState(true);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -115,7 +120,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
                 // 如果距离小于设定半径 (例如 50米)
                 if (dist < (zone.radius || 50)) {
                     // 触发红色警告
-                    alert(`⚠️ 进入风险区域：${zone.type}！\n${zone.message}`);
+                    alert(`⚠️ Warning: you have entered a risk area (${zone.type}).\n${zone.message}`);
                     // 你也可以在这里调用 setShowSOS(true) 自动弹窗
                 }
             });
@@ -126,7 +131,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
         if (now - lastUploadRef.current > 10000) { 
            lastUploadRef.current = now;
            
-           console.log("正在上传位置...", latitude, longitude);
+           console.log("Uploading location...", latitude, longitude);
            await supabase.from('locations').insert({
              session_id: sessionId, 
              user_id: userId,       
@@ -208,7 +213,11 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
 
   // --- Map Effect ---
   useEffect(() => {
+    const anyWindow = window as any;
+    const L = anyWindow.L;
     if (!mapContainerRef.current || !L) return;
+
+    // Initialize map once when L and container are ready
     if (!mapInstanceRef.current) {
         const map = L.map(mapContainerRef.current, {
             zoomControl: false,
@@ -222,10 +231,17 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
         }).addTo(map);
 
         // Active Route Line (Static reference)
-        L.polyline([
-          [22.2195, 114.2405], [22.2220, 114.2410], [22.2250, 114.2425],
-          [22.2285, 114.2425], [22.2350, 114.2440], [22.2400, 114.2430]
-        ], { color: '#BDBDBD', weight: 4, dashArray: '5, 10' }).addTo(map);
+        L.polyline(
+          [
+            [22.2195, 114.2405],
+            [22.2220, 114.2410],
+            [22.2250, 114.2425],
+            [22.2285, 114.2425],
+            [22.2350, 114.2440],
+            [22.2400, 114.2430]
+          ],
+          { color: '#BDBDBD', weight: 4, dashArray: '5, 10' }
+        ).addTo(map);
 
         // Recorded Path Line (Dynamic)
         recordedPolylineRef.current = L.polyline([], { color: '#2E7D32', weight: 5 }).addTo(map);
@@ -242,7 +258,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
     }
 
     // Update User Marker
-    if (userMarkerRef.current) {
+    if (userMarkerRef.current && mapInstanceRef.current) {
         userMarkerRef.current.setLatLng(userPos);
         if (mode === 'map' && isRecording) {
             mapInstanceRef.current.panTo(userPos);
@@ -270,12 +286,25 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
         }
     });
 
-  }, [userPos, teammates, recordedPath, waypoints, isRecording, mode]);
+    // Ensure Leaflet recalculates size when tab / layout changes
+    if (mapInstanceRef.current) {
+      setTimeout(() => {
+        try {
+          mapInstanceRef.current.invalidateSize();
+        } catch {
+          // ignore
+        }
+      }, 0);
+    }
+
+  }, [userPos, teammates, recordedPath, isRecording, mode]);
 
 
   // Handle adding markers dynamically
   const addMapMarker = (type: 'photo' | 'marker') => {
-      if (!mapInstanceRef.current) return;
+      const anyWindow = window as any;
+      const L = anyWindow.L;
+      if (!mapInstanceRef.current || !L) return;
       
       const newWaypoint: Waypoint = {
           id: Date.now().toString(),
@@ -361,12 +390,32 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
             const loadingId = 'loading-' + Date.now();
             setMessages(prev => [...prev, { id: loadingId, sender: 'ai', text: 'Thinking...', timestamp: new Date() }]);
             const responseText = await generateHikingAdvice(newUserMsg.text, context);
-            setMessages(prev => prev.filter(m => m.id !== loadingId).concat({
-                id: (Date.now() + 1).toString(),
-                sender: 'ai',
-                text: responseText,
-                timestamp: new Date()
-            }));
+            const aiMsg: Message = {
+              id: (Date.now() + 1).toString(),
+              sender: 'ai',
+              text: responseText,
+              timestamp: new Date()
+            };
+            setMessages(prev =>
+              prev.filter(m => m.id !== loadingId).concat(aiMsg)
+            );
+
+            // 可选：将对话保存到 chat_logs，供 AI 记忆使用
+            if (saveChatLogs) {
+              try {
+                await supabase.from('chat_logs').insert({
+                  session_id: sessionId,
+                  user_message: newUserMsg.text,
+                  ai_response: responseText,
+                  context_location: {
+                    lat: userPos[0],
+                    lng: userPos[1]
+                  }
+                });
+              } catch (e) {
+                console.error('Failed to save chat log', e);
+              }
+            }
         } catch (error) { console.error(error); }
     }
   };
@@ -460,12 +509,156 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
           </div>
       )}
 
+      {/* Add Note / Time Capsule Modal */}
+      {showAddNote && (
+        <div className="absolute inset-0 z-[1500] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-lg font-bold text-gray-900">Add Note</h3>
+              <button
+                onClick={() => setShowAddNote(false)}
+                className="text-gray-400 hover:text-gray-600 text-sm"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-3 text-sm">
+              <div>
+                <label className="text-xs text-gray-500 font-bold uppercase">Type</label>
+                <div className="flex gap-2 mt-1">
+                  <button
+                    onClick={() => setNoteType('user_note')}
+                    className={`flex-1 py-1.5 rounded-full text-xs font-bold ${
+                      noteType === 'user_note'
+                        ? 'bg-hike-green text-white'
+                        : 'bg-gray-100 text-gray-600'
+                    }`}
+                  >
+                    Personal Note
+                  </button>
+                  <button
+                    onClick={() => setNoteType('cultural_info')}
+                    className={`flex-1 py-1.5 rounded-full text-xs font-bold ${
+                      noteType === 'cultural_info'
+                        ? 'bg-hike-green text-white'
+                        : 'bg-gray-100 text-gray-600'
+                    }`}
+                  >
+                    Cultural Info
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 font-bold uppercase">Message</label>
+                <textarea
+                  value={noteContent}
+                  onChange={e => setNoteContent(e.target.value)}
+                  placeholder="Leave a message for future hikers..."
+                  className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-hike-green h-20 resize-none"
+                />
+              </div>
+              <p className="text-[10px] text-gray-400">
+                Location will use your current GPS: {userPos[0].toFixed(4)}, {userPos[1].toFixed(4)}.
+              </p>
+            </div>
+            <button
+              onClick={async () => {
+                if (!noteContent.trim()) return;
+                try {
+                  await supabase.from('location_messages').insert({
+                    user_id: userId,
+                    latitude: userPos[0],
+                    longitude: userPos[1],
+                    message_content: noteContent,
+                    message_type: noteType
+                  });
+                } catch (e) {
+                  console.error('Failed to save location message', e);
+                } finally {
+                  setNoteContent('');
+                  setShowAddNote(false);
+                }
+              }}
+              className="w-full mt-4 bg-hike-green text-white py-2.5 rounded-xl font-bold text-sm shadow-md active:scale-95 transition-transform"
+            >
+              Save Note
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Trail Report Modal */}
+      {showReportIssue && (
+        <div className="absolute inset-0 z-[1500] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-lg font-bold text-gray-900">Report Trail Issue</h3>
+              <button
+                onClick={() => setShowReportIssue(false)}
+                className="text-gray-400 hover:text-gray-600 text-sm"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-3 text-sm">
+              <div>
+                <label className="text-xs text-gray-500 font-bold uppercase">Issue Type</label>
+                <select
+                  value={issueType}
+                  onChange={e => setIssueType(e.target.value as any)}
+                  className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-hike-green bg-transparent"
+                >
+                  <option value="blockage">Blockage</option>
+                  <option value="trash">Trash</option>
+                  <option value="safety_hazard">Safety Hazard</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 font-bold uppercase">Description</label>
+                <textarea
+                  value={issueDescription}
+                  onChange={e => setIssueDescription(e.target.value)}
+                  placeholder="Describe what you see on the trail..."
+                  className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-hike-green h-20 resize-none"
+                />
+              </div>
+              <p className="text-[10px] text-gray-400">
+                Location will use your current GPS: {userPos[0].toFixed(4)}, {userPos[1].toFixed(4)}.
+              </p>
+            </div>
+            <button
+              onClick={async () => {
+                if (!issueDescription.trim()) return;
+                try {
+                  await supabase.from('trail_reports').insert({
+                    user_id: userId,
+                    latitude: userPos[0],
+                    longitude: userPos[1],
+                    issue_type: issueType,
+                    description: issueDescription,
+                    image_url: null
+                  });
+                } catch (e) {
+                  console.error('Failed to submit trail report', e);
+                } finally {
+                  setIssueDescription('');
+                  setShowReportIssue(false);
+                }
+              }}
+              className="w-full mt-4 bg-hike-green text-white py-2.5 rounded-xl font-bold text-sm shadow-md active:scale-95 transition-transform"
+            >
+              Submit Report
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Map Area */}
-      <div className={`relative transition-all duration-300 ${mode === 'map' ? 'h-[75%]' : 'h-[40%]'}`}>
+      <div className={`relative transition-all duration-300 ${mode === 'map' ? 'h-[68%]' : 'h-[38%]'}`}>
         <div ref={mapContainerRef} className="absolute inset-0 bg-gray-200 z-0" />
         
         {/* Risk Shield Dashboard */}
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[450] flex flex-col items-center">
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[450] flex flex-col items-center">
             <div className={`bg-white/90 backdrop-blur-md rounded-2xl shadow-lg border border-white/50 p-2 transition-all duration-300 ${deviceConnected ? 'w-[90vw] max-w-xs' : 'w-auto'}`}>
                 <div className="flex items-center justify-around gap-2 text-xs font-bold text-gray-700">
                     <div className="flex flex-col items-center">
@@ -536,6 +729,20 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
             >
                 <span className="font-black text-[10px] leading-tight">SOS</span>
             </button>
+            {/* Add Note */}
+            <button
+                onClick={() => setShowAddNote(true)}
+                className="bg-white/90 text-gray-700 p-2.5 rounded-full shadow flex items-center justify-center active:scale-95 transition-transform"
+            >
+                <MessageSquare size={18} className="text-hike-green" />
+            </button>
+            {/* Report Issue */}
+            <button
+                onClick={() => setShowReportIssue(true)}
+                className="bg-white/90 text-gray-700 p-2.5 rounded-full shadow flex items-center justify-center active:scale-95 transition-transform"
+            >
+                <AlertCircle size={18} className="text-red-500" />
+            </button>
         </div>
 
         <div className="absolute bottom-10 right-4 z-[400] flex flex-col gap-2">
@@ -586,6 +793,18 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
                <div className="bg-blue-100 p-1 rounded text-blue-600"><Users size={14}/></div>
                Team (2)
             </button>
+         </div>
+         <div className="flex items-center justify-between px-4 py-1.5 border-b border-gray-50 text-[11px] text-gray-500">
+           <span>Session: {sessionId.slice(0, 8)}...</span>
+           <label className="flex items-center gap-1">
+             <input
+               type="checkbox"
+               checked={saveChatLogs}
+               onChange={e => setSaveChatLogs(e.target.checked)}
+               className="w-3 h-3 rounded border-gray-300 text-hike-green"
+             />
+             <span>Save chat to history</span>
+           </label>
          </div>
 
          <div className="flex-1 overflow-y-auto p-4 bg-gray-50">

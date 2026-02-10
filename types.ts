@@ -81,4 +81,9 @@ export interface GroupHike {
   isOrganizer: boolean;
   // Optional list of member display names for UI (not required by core logic)
   members?: string[];
+  // Optional planning fields for pre-hike details
+  meetingPoint?: string;
+  startTime?: string;
+  companionCount?: number;
+  status?: 'draft' | 'confirmed';
 }
