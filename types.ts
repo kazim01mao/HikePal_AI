@@ -15,6 +15,7 @@ export interface Route {
   startPoint: string;
   endPoint: string;
   elevationGain: number;
+  imageUrl?: string;
   isUserPublished?: boolean; // To highlight user uploads
 }
 
@@ -79,4 +80,15 @@ export interface GroupHike {
   maxMembers: number;
   currentMembers: number;
   isOrganizer: boolean;
+  // Optional list of member display names for UI (not required by core logic)
+  members?: string[];
+  // Optional planning fields for pre-hike details
+  meetingPoint?: string;
+  startTime?: string;
+  companionCount?: number;
+  status?: 'draft' | 'confirmed';
+  routeId?: string; // Link to a specific route
+  planned_duration?: string; // From hike_sessions
+  experience_level?: 'first_time' | 'occasional' | 'advanced'; // From hike_sessions
+  initial_mood?: string; // From hike_sessions
 }
