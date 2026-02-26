@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Message, Route, Teammate, Track, Waypoint } from '../types';
 import { generateHikingAdvice } from '../services/geminiService';
-import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, MapPin, Thermometer, Wind, Mountain, Heart, Battery, Flame, Zap, Phone, Bell, ShieldAlert } from 'lucide-react';
-// --- 📍 修改 1：引入 supabase 客户端 ---
-// 请确保你之前已经在 src/utils/supabaseClient.js 创建好了这个文件
+import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, MapPin, Thermometer, Wind, Mountain, Heart, Battery, Flame, Zap, Phone, Bell, ShieldAlert, ArrowLeft, Star, Activity, Clock } from 'lucide-react';
 import { supabase } from '../utils/supabaseClient';
-// --- 📍 修改 2：添加距离计算函数 (Haversine 公式) ---
+import { DRAGONS_BACK_COORDINATES } from '../utils/trailData';
+// --- 📍 Update 2: Add distance calculation function (Haversine formula) ---
 function getDistanceFromLatLonInM(lat1: number, lon1: number, lat2: number, lon2: number) {
-  var R = 6371e3; // 地球半径，单位：米
+  var R = 6371e3; // Earth radius in meters
   var dLat = deg2rad(lat2 - lat1);
   var dLon = deg2rad(lon2 - lon1);
   var a =
@@ -26,9 +25,9 @@ function deg2rad(deg: number) {
 interface CompanionViewProps {
   activeRoute: Route | null;
   onSaveTrack: (track: Track) => void;
-    // --- 📍 修改 3：新增 ID 参数 ---
-  userId: string;     // 当前用户的 ID
-  sessionId: string;  // 当前徒步活动的 ID
+    // --- 📍 Update 3: Add ID parameters ---
+  userId: string;     // Current User ID
+  sessionId: string;  // Current Session ID
 }
 
 const MOCK_TEAMMATES_INIT: Teammate[] = [
@@ -50,9 +49,10 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [trackName, setTrackName] = useState(activeRoute?.name || 'My Hike');
   const [showSOS, setShowSOS] = useState(false);
-  // --- 📍 修改 5：新增状态 ---
-  const [riskZones, setRiskZones] = useState<any[]>([]); // 存风险点
-  const lastUploadRef = useRef<number>(0); // 记录上次上传时间，防止刷屏
+  // --- 📍 Update 5: Add state ---
+  const [riskZones, setRiskZones] = useState<any[]>([]); // Stores risk zones
+  const lastUploadRef = useRef<number>(0); // Tracks last upload time to prevent frequency issues
+
 
   // Risk Shield State
   const [deviceConnected, setDeviceConnected] = useState(true);
@@ -77,6 +77,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
   const [issueType, setIssueType] = useState<'blockage' | 'trash' | 'safety_hazard'>('blockage');
   const [issueDescription, setIssueDescription] = useState('');
   const [saveChatLogs, setSaveChatLogs] = useState(true);
+  const [showRecordingToast, setShowRecordingToast] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -88,45 +89,45 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
   const timerRef = useRef<any>(null);
 
   // --- Real-time Simulation & Recording Logic ---
-  // --- 📍 修改 6：核心逻辑 - 加载风险点 ---
+  // --- 📍 Update 6: Core Logic - Load risk zones ---
   useEffect(() => {
     const fetchRiskZones = async () => {
-      // 从 Supabase 获取风险点
+      // Fetch risk zones from Supabase
       const { data } = await supabase.from('risk_zones').select('*');
       if (data) setRiskZones(data);
     };
     fetchRiskZones();
   }, []);
 
-  // --- 📍 修改 7：核心逻辑 - 真实 GPS 追踪 & 电子围栏 & 上传 ---
+  // --- 📍 Update 7: Core Logic - Real GPS tracking & Geofencing & Upload ---
   useEffect(() => {
-    if (!isRecording) return; // 如果没按开始键，就不追踪
+    if (!isRecording) return; // Do not track if start button hasn't been pressed
 
-    // 开启 GPS 监听
+    // Enable GPS tracking
     const geoId = navigator.geolocation.watchPosition(
       async (position) => {
-        // 1. 获取真实坐标
+        // 1. Get real coordinates
         const { latitude, longitude } = position.coords;
         const newPos: [number, number] = [latitude, longitude];
 
-        // 2. 更新地图显示 (React State)
+        // 2. Update map display (React State)
         setUserPos(newPos);
         setRecordedPath(prev => [...prev, newPos]);
 
-        // 3. 🛡️ 电子围栏检测 (每收到一个坐标就算一次)
+        // 3. 🛡️ Geofencing detection (calculated per coordinate)
         if (riskZones.length > 0) {
             riskZones.forEach(zone => {
                 const dist = getDistanceFromLatLonInM(latitude, longitude, zone.latitude, zone.longitude);
-                // 如果距离小于设定半径 (例如 50米)
+                // If distance is less than defined radius (e.g. 50m)
                 if (dist < (zone.radius || 50)) {
-                    // 触发红色警告
+                    // Trigger red alert
                     alert(`⚠️ Warning: you have entered a risk area (${zone.type}).\n${zone.message}`);
-                    // 你也可以在这里调用 setShowSOS(true) 自动弹窗
+                    // You can also call setShowSOS(true) here for auto-popup
                 }
             });
         }
 
-        // 4. ☁️ 上传到 Supabase (每 10 秒传一次)
+        // 4. ☁️ Upload to Supabase (every 10 seconds)
         const now = Date.now();
         if (now - lastUploadRef.current > 10000) { 
            lastUploadRef.current = now;
@@ -141,16 +142,16 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
         }
       },
       (err) => console.error("GPS Error:", err),
-      { enableHighAccuracy: true } // 要求高精度 GPS
+      { enableHighAccuracy: true } // Request high-accuracy GPS
     );
 
-    // 清理函数：组件卸载或停止录制时，关闭 GPS
+    // Cleanup: Close GPS on unmount or stop recording
     return () => navigator.geolocation.clearWatch(geoId);
   }, [isRecording, riskZones, sessionId, userId]);
 
-  // --- 📍 修改 8：核心逻辑 - 实时看队友 ---
+  // --- 📍 Update 8: Core Logic - Real-time teammate tracking ---
   useEffect(() => {
-      // 订阅数据库变化
+      // Subscribe to database changes
       const channel = supabase
         .channel('teammate-tracker')
         .on(
@@ -158,17 +159,17 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
             { event: 'INSERT', schema: 'public', table: 'locations', filter: `session_id=eq.${sessionId}` },
             (payload) => {
                 const newLoc = payload.new;
-                // 如果是自己传的数据，不管它
+                // Ignore if it's our own data
                 if (newLoc.user_id === userId) return;
 
-                // 更新队友位置状态
+                // Update teammate location state
                 setTeammates(prev => {
-                    // 如果队友已在列表中，更新坐标
+                    // If teammate exists, update coordinates
                     const exists = prev.find(t => t.id === newLoc.user_id);
                     if (exists) {
                         return prev.map(t => t.id === newLoc.user_id ? { ...t, lat: newLoc.latitude, lng: newLoc.longitude } : t);
                     }
-                    // 如果是新队友，加进来 (这里名字暂时写死，以后可以查表)
+                    // Add if new teammate (name is hardcoded for now)
                     return [...prev, {
                         id: newLoc.user_id,
                         name: 'New Teammate',
@@ -219,10 +220,13 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
 
     // Initialize map once when L and container are ready
     if (!mapInstanceRef.current) {
+        const initialView: [number, number] = activeRoute ? USER_START_POS : [22.3193, 114.1694]; // Default to central HK
+        const initialZoom = activeRoute ? 15 : 11;
+        
         const map = L.map(mapContainerRef.current, {
             zoomControl: false,
             attributionControl: false
-        }).setView(USER_START_POS, 15);
+        }).setView(initialView, initialZoom);
 
         // Revert to CartoDB Light for a cleaner look
         L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
@@ -230,17 +234,10 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
         }).addTo(map);
 
-        // Active Route Line (Static reference)
+        // Dragon's Back Route Highlight (High Precision)
         L.polyline(
-          [
-            [22.2195, 114.2405],
-            [22.2220, 114.2410],
-            [22.2250, 114.2425],
-            [22.2285, 114.2425],
-            [22.2350, 114.2440],
-            [22.2400, 114.2430]
-          ],
-          { color: '#BDBDBD', weight: 4, dashArray: '5, 10' }
+          DRAGONS_BACK_COORDINATES,
+          { color: '#2E7D32', weight: 6, opacity: 0.6, lineCap: 'round', lineJoin: 'round' }
         ).addTo(map);
 
         // Recorded Path Line (Dynamic)
@@ -260,7 +257,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
     // Update User Marker
     if (userMarkerRef.current && mapInstanceRef.current) {
         userMarkerRef.current.setLatLng(userPos);
-        if (mode === 'map' && isRecording) {
+        // Only auto-pan if recording AND a route is selected
+        if (mode === 'map' && isRecording && activeRoute) {
             mapInstanceRef.current.panTo(userPos);
         }
     }
@@ -338,6 +336,12 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
       return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  const handleStartRecording = () => {
+    setIsRecording(true);
+    setShowRecordingToast(true);
+    setTimeout(() => setShowRecordingToast(false), 3000);
+  };
+
   const handleFinishRecording = () => {
       setIsRecording(false);
       setShowSaveDialog(true);
@@ -354,6 +358,15 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
           waypoints: waypoints
       };
       onSaveTrack(newTrack);
+  };
+
+  // AI Route Search and Recommendation
+  const handleAIRouteSearch = () => {
+    // Moved to PlanningView
+  };
+
+  const handleRouteSearch = (query: string) => {
+    // Moved to PlanningView
   };
 
   const handleSendMessage = async () => {
@@ -400,7 +413,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
               prev.filter(m => m.id !== loadingId).concat(aiMsg)
             );
 
-            // 可选：将对话保存到 chat_logs，供 AI 记忆使用
+            // Optional: Save chat to chat_logs for AI context
             if (saveChatLogs) {
               try {
                 await supabase.from('chat_logs').insert({
@@ -426,6 +439,16 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
 
   return (
     <div className="flex flex-col h-full bg-gray-100 relative">
+      {/* Recording Started Toast */}
+      {showRecordingToast && (
+        <div className="absolute top-32 left-1/2 -translate-x-1/2 z-[2000] animate-bounce-in">
+          <div className="bg-black/80 backdrop-blur-md text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 border border-white/20">
+            <div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse"></div>
+            <span className="text-sm font-bold tracking-tight">Track recording started</span>
+          </div>
+        </div>
+      )}
+
       {/* SOS Overlay */}
       {showSOS && (
           <div className="absolute inset-0 z-[2000] bg-red-600/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-white text-center animate-fade-in">
@@ -747,12 +770,20 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
 
         <div className="absolute bottom-10 right-4 z-[400] flex flex-col gap-2">
              {/* Record Toggle */}
-            <button 
-                onClick={() => isRecording ? handleFinishRecording() : setIsRecording(true)}
-                className={`p-3 rounded-full shadow-lg text-white font-bold transition-all active:scale-95 ${isRecording ? 'bg-red-500' : 'bg-hike-green'}`}
-            >
-                {isRecording ? <Square size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
-            </button>
+            <div className="relative">
+              {!isRecording && (
+                <div className="absolute right-14 top-1/2 -translate-y-1/2 whitespace-nowrap bg-hike-green text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-lg animate-bounce-x">
+                  Tap here to record track
+                  <div className="absolute -right-1 top-1/2 -translate-y-1/2 w-2 h-2 bg-hike-green rotate-45"></div>
+                </div>
+              )}
+              <button 
+                  onClick={() => isRecording ? handleFinishRecording() : handleStartRecording()}
+                  className={`p-3 rounded-full shadow-lg text-white font-bold transition-all active:scale-95 ${isRecording ? 'bg-red-500' : 'bg-hike-green'}`}
+              >
+                  {isRecording ? <Square size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
+              </button>
+            </div>
 
             {/* Tools */}
             {isRecording && (
@@ -774,38 +805,45 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
         >
            <div className="w-12 h-1 bg-gray-300 rounded-full"></div>
         </div>
+
+        {/* --- iOS Style Hint --- */}
+        {!activeRoute && (
+          <div className="absolute bottom-8 left-3 z-[400] pointer-events-none">
+            <div className="bg-white/70 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/50 shadow-sm flex items-center gap-2">
+              <div className="w-2 h-2 bg-hike-green rounded-full animate-pulse"></div>
+              <span className="text-[10px] font-semibold text-gray-600 tracking-tight uppercase">Demo: Dragon's Back Area</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Chat Area */}
       <div className="flex-1 bg-white flex flex-col pb-20 overflow-hidden">
          <div className="flex border-b border-gray-100 shrink-0">
             <button 
-               onClick={() => setChatType('ai')}
-               className={`flex-1 py-3 text-sm font-bold flex items-center justify-center gap-2 ${chatType === 'ai' ? 'text-hike-green border-b-2 border-hike-green' : 'text-gray-400'}`}
+               onClick={() => {
+                 setChatType('ai');
+                 setMode('chat');
+               }}
+               className={`flex-1 py-3 text-sm font-bold flex items-center justify-center gap-2 ${mode === 'chat' && chatType === 'ai' ? 'text-hike-green border-b-2 border-hike-green' : 'text-gray-400'}`}
             >
                <div className="bg-green-100 p-1 rounded text-hike-green"><MessageSquare size={14}/></div>
                AI Guide
             </button>
-            <button 
-               onClick={() => setChatType('team')}
-               className={`flex-1 py-3 text-sm font-bold flex items-center justify-center gap-2 ${chatType === 'team' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400'}`}
-            >
-               <div className="bg-blue-100 p-1 rounded text-blue-600"><Users size={14}/></div>
-               Team (2)
-            </button>
+            {activeRoute && (
+              <button 
+                onClick={() => {
+                  setChatType('team');
+                  setMode('chat');
+                }}
+                className={`flex-1 py-3 text-sm font-bold flex items-center justify-center gap-2 ${mode === 'chat' && chatType === 'team' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400'}`}
+              >
+                <div className="bg-blue-100 p-1 rounded text-blue-600"><Users size={14}/></div>
+                Team (2)
+              </button>
+            )}
          </div>
-         <div className="flex items-center justify-between px-4 py-1.5 border-b border-gray-50 text-[11px] text-gray-500">
-           <span>Session: {sessionId.slice(0, 8)}...</span>
-           <label className="flex items-center gap-1">
-             <input
-               type="checkbox"
-               checked={saveChatLogs}
-               onChange={e => setSaveChatLogs(e.target.checked)}
-               className="w-3 h-3 rounded border-gray-300 text-hike-green"
-             />
-             <span>Save chat to history</span>
-           </label>
-         </div>
+
 
          <div className="flex-1 overflow-y-auto p-4 bg-gray-50">
              {/* Chat messages ... same as before */}
