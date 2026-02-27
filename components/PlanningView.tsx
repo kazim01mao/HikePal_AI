@@ -34,12 +34,12 @@ import {
 } from '../utils/trailData';
 
 interface PlanningViewProps {
-  routes: Route[];
-  onSelectRoute: (route: Route) => void;
-  onCreateGroupHike: (hike: GroupHike) => void;
+  routes?: Route[];
+  onSelectRoute?: (route: Route) => void;
+  onCreateGroupHike?: (hike: GroupHike) => void;
   onJoinGroupHike?: (group: GroupHike) => void;
   // 当前登录用户，用于写入 hike_sessions.user_id
-  currentUserId: string;
+  currentUserId?: string;
   // 确认出行后，通知上层开始 Companion（携带 sessionId）
   onGroupConfirmed?: (sessionId: string) => void;
 }
@@ -210,12 +210,12 @@ const MOCK_REVIEWS = [
 ];
 
 const PlanningView: React.FC<PlanningViewProps> = ({
-  routes,
-  onSelectRoute,
-  onCreateGroupHike,
-  onJoinGroupHike,
-  currentUserId,
-  onGroupConfirmed
+  routes = MOCK_ROUTES,
+  onSelectRoute = () => {},
+  onCreateGroupHike = () => {},
+  onJoinGroupHike = () => {},
+  currentUserId = '',
+  onGroupConfirmed = () => {}
 }) => {
   const [selectedCity] = useState('Hong Kong');
   const [activeRouteId, setActiveRouteId] = useState<string | null>(null);

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Message, Route, Teammate, Track, Waypoint } from '../types';
+import { Message, Route, Teammate, Track, Waypoint, User } from '../types';
 import { generateHikingAdvice } from '../services/geminiService';
 import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, MapPin, Thermometer, Wind, Mountain, Heart, Battery, Flame, Zap, Phone, Bell, ShieldAlert, ArrowLeft, Star, Activity, Clock } from 'lucide-react';
 import { supabase } from '../utils/supabaseClient';
@@ -23,6 +23,7 @@ function deg2rad(deg: number) {
 }
 
 interface CompanionViewProps {
+  user: User; // 接收来自 App.tsx 的用户对象
   activeRoute: Route | null;
   onSaveTrack: (track: Track) => void;
     // --- 📍 Update 3: Add ID parameters ---
@@ -37,7 +38,7 @@ const MOCK_TEAMMATES_INIT: Teammate[] = [
 
 const USER_START_POS: [number, number] = [22.2285, 114.2425];
 
-const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack, userId, sessionId }) => {
+const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSaveTrack, userId, sessionId }) => {
   const [messages, setMessages] = useState<Message[]>([
     { id: '1', sender: 'ai', text: 'Hello! HikePal AI here. I see you are near the peak. I am tracking your location. How can I assist?', timestamp: new Date() }
   ]);
@@ -375,6 +376,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
     const newUserMsg: Message = {
       id: Date.now().toString(),
       sender: 'user',
+      senderName: user.name || 'Me', // 使用真实姓名
       text: inputText,
       timestamp: new Date()
     };
@@ -417,6 +419,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ activeRoute, onSaveTrack,
             if (saveChatLogs) {
               try {
                 await supabase.from('chat_logs').insert({
+                  user_id: user.id, // 【关键】添加用户 ID
                   session_id: sessionId,
                   user_message: newUserMsg.text,
                   ai_response: responseText,

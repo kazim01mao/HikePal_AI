@@ -4,6 +4,18 @@ export enum Tab {
   HOME = 'HOME'
 }
 
+export enum AuthMode {
+  LOGIN = 'LOGIN',
+  SIGNUP = 'SIGNUP'
+}
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: 'hiker' | 'guide' | 'admin';
+}
+
 export interface Route {
   id: string;
   name: string;
