@@ -1,18 +1,20 @@
 import React, { useState } from 'react';
-import { UserStats, Track, GroupHike } from '../types';
-import { Settings, QrCode, Heart, Map, Clock, Zap, Activity, Share2, MoreHorizontal, Users, Trash2 } from 'lucide-react';
+import { User, UserStats, Track, GroupHike } from '../types';
+import { Settings, QrCode, Heart, Map, Clock, Zap, Activity, Share2, MoreHorizontal, Users, Trash2, LogOut } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 
 interface HomeViewProps {
+    user: User; // 接收来自 App.tsx 的用户对象
+    onLogout: () => void; // 退出登录回调
     myTracks: Track[];
     myGroupHikes: GroupHike[];
     onPublishTrack: (track: Track) => void;
     onDeleteGroupHike?: (groupId: string) => void;
 }
 
-const HomeView: React.FC<HomeViewProps> = ({ myTracks, myGroupHikes, onPublishTrack, onDeleteGroupHike }) => {
+const HomeView: React.FC<HomeViewProps> = ({ user, onLogout, myTracks, myGroupHikes, onPublishTrack, onDeleteGroupHike }) => {
   const [showEditProfile, setShowEditProfile] = useState(false);
-  const [profileUsername, setProfileUsername] = useState('Alex Hiker');
+  const [profileUsername, setProfileUsername] = useState(user.name || 'Alex Hiker');
   const [profileRole, setProfileRole] = useState<'hiker' | 'guardian' | 'ngo_admin'>('hiker');
   const [profileAvatarUrl, setProfileAvatarUrl] = useState('https://picsum.photos/100/100');
 
@@ -66,6 +68,13 @@ const HomeView: React.FC<HomeViewProps> = ({ myTracks, myGroupHikes, onPublishTr
                  className="p-2 bg-gray-100 rounded-full text-gray-600 hover:bg-gray-200 transition"
                >
                  <Settings size={18}/>
+               </button>
+               <button
+                 onClick={onLogout}
+                 className="p-2 bg-red-100 rounded-full text-red-600 hover:bg-red-200 transition"
+                 title="Logout"
+               >
+                 <LogOut size={18}/>
                </button>
             </div>
          </div>
