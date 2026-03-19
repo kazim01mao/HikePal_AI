@@ -29,6 +29,7 @@ export interface Route {
   elevationGain: number;
   imageUrl?: string;
   isUserPublished?: boolean; // To highlight user uploads
+  coordinates?: [number, number][]; // Full route path
 }
 
 export interface Waypoint {
@@ -46,6 +47,7 @@ export interface Track {
   date: Date;
   duration: string;
   distance: string;
+  difficulty: number;
   coordinates: [number, number][];
   waypoints: Waypoint[];
 }
@@ -103,4 +105,26 @@ export interface GroupHike {
   planned_duration?: string; // From hike_sessions
   experience_level?: 'first_time' | 'occasional' | 'advanced'; // From hike_sessions
   initial_mood?: string; // From hike_sessions
+}
+
+export interface RouteSegment {
+  segment_id: string;
+  segment_name: string;
+  segment_order: number;
+  difficulty: number;
+  distance: number;
+  duration_minutes: number;
+  elevation_gain: number;
+  tags: string[];
+  highlights?: string[];
+  coordinates: [number, number][];
+}
+
+export interface ComposedRoute extends Route {
+  is_segment_based: true;
+  total_distance: number;
+  total_duration_minutes: number;
+  total_elevation_gain: number;
+  difficulty_level: number;
+  segments?: RouteSegment[];
 }
