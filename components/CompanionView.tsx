@@ -1,47 +1,93 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Message, Route, Teammate, Track, Waypoint, User } from '../types';
 import { generateHikingAdvice } from '../services/geminiService';
-import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, MapPin, Thermometer, Wind, Mountain, Heart, Battery, Flame, Zap, Phone, Bell, ShieldAlert, ArrowLeft, Star, Activity, Clock } from 'lucide-react';
+import { uploadRouteToCommunity } from '../services/segmentRoutingService';
+import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, Upload, Compass, MapPin, Thermometer, Wind, Phone, Bell, ShieldAlert, ArrowLeft, Star, Activity, Clock, X, Edit3, Check, ChevronRight, History, Sparkles } from 'lucide-react';
 import { supabase } from '../utils/supabaseClient';
 import { DRAGONS_BACK_COORDINATES } from '../utils/trailData';
-// --- 📍 Update 2: Add distance calculation function (Haversine formula) ---
+
+// --- Utility Functions ---
 function getDistanceFromLatLonInM(lat1: number, lon1: number, lat2: number, lon2: number) {
-  var R = 6371e3; // Earth radius in meters
+  var R = 6371e3; 
   var dLat = deg2rad(lat2 - lat1);
   var dLon = deg2rad(lon2 - lon1);
-  var a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat1)) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  var a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2); 
   var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  var d = R * c;
-  return d;
+  return R * c;
 }
 
-function deg2rad(deg: number) {
-  return deg * (Math.PI / 180);
+function deg2rad(deg: number) { return deg * (Math.PI / 180); }
+
+function isPointNearRoute(pointLat: number, pointLng: number, routeCoords: [number, number][], maxDistanceMeters: number = 200) {
+  if (!routeCoords || routeCoords.length === 0) return false;
+  for (const coord of routeCoords) {
+    if (getDistanceFromLatLonInM(pointLat, pointLng, coord[0], coord[1]) <= maxDistanceMeters) return true;
+  }
+  return false;
 }
+
+function parseGeographyPoint(geoObj: any): [number, number] | null {
+  if (!geoObj) return null;
+  if (geoObj.type === 'Point' && Array.isArray(geoObj.coordinates)) return [geoObj.coordinates[1], geoObj.coordinates[0]];
+  if (typeof geoObj === 'string') {
+    try {
+      const parsed = JSON.parse(geoObj);
+      if (parsed.type === 'Point' && Array.isArray(parsed.coordinates)) return [parsed.coordinates[1], parsed.coordinates[0]];
+    } catch(e) {}
+  }
+  return null;
+}
+
+const getCoords = (r: any): [number, number] | null => {
+  // Handle GeoJSON format if present
+  if (r.geojson) {
+    let g = r.geojson;
+    if (typeof g === 'string') { try { g = JSON.parse(g); } catch(e) {} }
+    if (g && g.type === 'Point' && Array.isArray(g.coordinates)) {
+       return [g.coordinates[1], g.coordinates[0]];
+    }
+  }
+  // Handle Hex/EWKB Point heuristic for standard HK coordinates
+  if (typeof r.coordinates === 'string' && r.coordinates.startsWith('0101')) {
+     console.warn('DEBUG: Binary coordinates detected, please ensure RPC is installed.');
+  }
+  
+  // Fallback to parseGeographyPoint for legacy JSON coordinates
+  if (!r.coordinates) return null;
+  if (r.coordinates.type === 'Point' && Array.isArray(r.coordinates.coordinates)) return [r.coordinates.coordinates[1], r.coordinates.coordinates[0]];
+  if (typeof r.coordinates === 'string') {
+    try {
+      const parsed = JSON.parse(r.coordinates);
+      if (parsed.type === 'Point' && Array.isArray(parsed.coordinates)) return [parsed.coordinates[1], parsed.coordinates[0]];
+    } catch(e) {}
+  }
+  return null;
+};
 
 interface CompanionViewProps {
-  user: User; // 接收来自 App.tsx 的用户对象
+  user: User;
   activeRoute: Route | null;
   onSaveTrack: (track: Track) => void;
-    // --- 📍 Update 3: Add ID parameters ---
-  userId: string;     // Current User ID
-  sessionId: string;  // Current Session ID
+  userId: string;
+  sessionId: string;
+  onBack?: () => void;
+  teamId?: string;
+  isLeader?: boolean;
 }
 
-const MOCK_TEAMMATES_INIT: Teammate[] = [
-  { id: 't1', name: 'Alice', lat: 22.228, lng: 114.242, status: 'active', avatar: 'https://picsum.photos/40/40?random=1' },
-  { id: 't2', name: 'Bob', lat: 22.227, lng: 114.2415, status: 'active', avatar: 'https://picsum.photos/40/40?random=2' },
-];
+const USER_START_POS: [number, number] = [22.25, 114.17]; // Centered on Hong Kong Island
 
-const USER_START_POS: [number, number] = [22.2285, 114.2425];
+const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSaveTrack, userId, sessionId, onBack, teamId, isLeader }) => {
+  // --- States ---
+  const [cardPos, setCardPos] = useState({ x: 16, y: 100 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef({ x: 0, y: 0, cardX: 0, cardY: 0 });
 
-const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSaveTrack, userId, sessionId }) => {
-  const [messages, setMessages] = useState<Message[]>([
-    { id: '1', sender: 'ai', text: 'Hello! HikePal AI here. I see you are near the peak. I am tracking your location. How can I assist?', timestamp: new Date() }
-  ]);
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0);
@@ -50,850 +96,944 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [trackName, setTrackName] = useState(activeRoute?.name || 'My Hike');
   const [showSOS, setShowSOS] = useState(false);
-  // --- 📍 Update 5: Add state ---
-  const [riskZones, setRiskZones] = useState<any[]>([]); // Stores risk zones
-  const lastUploadRef = useRef<number>(0); // Tracks last upload time to prevent frequency issues
-
-
-  // Risk Shield State
-  const [deviceConnected, setDeviceConnected] = useState(true);
-  const [riskStats, setRiskStats] = useState({
-      temp: 24,
-      humidity: 78,
-      altitude: 284,
-      heartRate: 110,
-      battery: 85,
-      calories: 320
-  });
-
-  // Tracking State
+  const [riskZones, setRiskZones] = useState<any[]>([]);
+  const lastUploadRef = useRef<number>(0);
+  const [isUploadingRoute, setIsUploadingRoute] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [uploadData, setUploadData] = useState({ name: '', description: '', tags: '' });
+  const [riskStats, setRiskStats] = useState({ temp: 24, humidity: 78, condition: 'Sunny' });
   const [userPos, setUserPos] = useState<[number, number]>(USER_START_POS);
-  const [teammates, setTeammates] = useState<Teammate[]>(MOCK_TEAMMATES_INIT);
+  const [teammates, setTeammates] = useState<Teammate[]>([]);
   const [recordedPath, setRecordedPath] = useState<[number, number][]>([USER_START_POS]);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
+  const [reminderInfo, setReminderInfo] = useState<any[]>([]);
+  const alertedItemsRef = useRef<Set<string>>(new Set());
   const [showAddNote, setShowAddNote] = useState(false);
   const [noteContent, setNoteContent] = useState('');
-  const [noteType, setNoteType] = useState<'user_note' | 'cultural_info'>('user_note');
-  const [showReportIssue, setShowReportIssue] = useState(false);
-  const [issueType, setIssueType] = useState<'blockage' | 'trash' | 'safety_hazard'>('blockage');
-  const [issueDescription, setIssueDescription] = useState('');
-  const [saveChatLogs, setSaveChatLogs] = useState(true);
-  const [showRecordingToast, setShowRecordingToast] = useState(false);
-
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [isNoteSubmitting, setIsNoteSubmitting] = useState(false);
+  const [showRouteInfo, setShowRouteInfo] = useState(false);
+  const [hasStartedHike, setHasStartedHike] = useState(false);
+  const [alertsEnabled, setAlertsEnabled] = useState(true);
+  const [actualTeamSize, setActualTeamSize] = useState<number>(1);
+  const [isRefreshingTeam, setIsRefreshingTeam] = useState(false);
+  const [aiHighlights, setAiHighlights] = useState<string>('');
+  const [isLoadingHighlights, setIsLoadingHighlights] = useState(false);
+  
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const userMarkerRef = useRef<any>(null);
   const teammateMarkersRef = useRef<{ [id: string]: any }>({});
-  const polylineRef = useRef<any>(null);
+  const reminderMarkersRef = useRef<any[]>([]);
   const recordedPolylineRef = useRef<any>(null);
   const timerRef = useRef<any>(null);
+  const isReviewMode = !!(activeRoute as any)?.isReview;
 
-  // --- Real-time Simulation & Recording Logic ---
-  // --- 📍 Update 6: Core Logic - Load risk zones ---
+  // --- Functions ---
+  const loadTeamMembers = async () => {
+    if (!teamId) return;
+    try {
+      setIsRefreshingTeam(true);
+      const { data: teamData } = await supabase.from('teams').select('team_size').eq('id', teamId).single();
+      if (teamData) setActualTeamSize(teamData.team_size || 1);
+      const { data } = await supabase.from('team_members').select('*').eq('team_id', teamId).order('joined_at', { ascending: true });
+      if (data) setTeamMembers(data);
+    } catch (err) { console.warn(err); } finally { setIsRefreshingTeam(false); }
+  };
+
+  const loadMetadata = async () => {
+    console.log('📡 CompanionView: Fetching reminders via RPC...');
+    
+    try {
+      // Use RPC to get formatted GeoJSON coordinates directly
+      const { data, error } = await supabase.rpc('get_reminder_with_coords');
+
+      if (error) {
+        console.error('❌ CompanionView RPC Error:', error);
+        
+        // Fallback to direct table query if RPC fails (e.g. during migration)
+        const { data: fallbackData } = await supabase
+          .from('reminder_info')
+          .select('id, name, category, type, ai_prompt, risk_level, coordinates');
+          
+        if (fallbackData) {
+          setReminderInfo(fallbackData);
+        }
+      } else if (data) {
+        console.log('✅ CompanionView: Loaded reminders count:', data.length);
+        setReminderInfo(data);
+      }
+    } catch (err) {
+      console.error('❌ CompanionView metadata load failed:', err);
+    }
+  };
+
+  const fetchWeather = async () => {
+    const mockWeather = { temp: 26, humidity: 72, condition: 'Clear Sky' };
+    setRiskStats(mockWeather);
+  };
+
+  const handleConfirmUpload = async () => {
+    if (!activeRoute) return;
+    setIsUploadingRoute(true);
+    try {
+      await uploadRouteToCommunity(userId, {
+        name: uploadData.name,
+        description: uploadData.description,
+        tags: uploadData.tags.split(',').map(t => t.trim()).filter(t => t.length > 0),
+        route_data: {
+          id: activeRoute.id,
+          distance: activeRoute.distance,
+          duration: activeRoute.duration,
+          difficulty: activeRoute.difficulty,
+          coordinates: recordedPath,
+          waypoints: waypoints
+        },
+      });
+      setShowUploadModal(false);
+      alert('✅ Shared successfully!');
+    } catch (e) { console.error(e); } finally { setIsUploadingRoute(false); }
+  };
+
+  // --- Effects ---
   useEffect(() => {
-    const fetchRiskZones = async () => {
-      // Fetch risk zones from Supabase
-      const { data } = await supabase.from('risk_zones').select('*');
-      if (data) setRiskZones(data);
-    };
-    fetchRiskZones();
+    fetchWeather();
+    const interval = setInterval(fetchWeather, 300000);
+    return () => clearInterval(interval);
   }, []);
 
-  // --- 📍 Update 7: Core Logic - Real GPS tracking & Geofencing & Upload ---
   useEffect(() => {
-    if (!isRecording) return; // Do not track if start button hasn't been pressed
+    loadMetadata();
+    if (teamId) {
+      loadTeamMembers();
+      const interval = setInterval(loadTeamMembers, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [teamId]);
 
-    // Enable GPS tracking
+  // Generate AI Highlights when route changes
+  useEffect(() => {
+    const fetchHighlights = async () => {
+      if (!activeRoute) return;
+      try {
+        setIsLoadingHighlights(true);
+        const relatedReminders = reminderInfo.filter(r => {
+          const coords = getCoords(r);
+          return coords && isPointNearRoute(coords[0], coords[1], activeRoute.coordinates || [], 300);
+        });
+        
+        const highlights = await import('../services/geminiService').then(m => 
+          m.generateRouteHighlights(activeRoute.name, activeRoute.description || '', relatedReminders)
+        );
+        setAiHighlights(highlights);
+      } catch (e) {
+        console.error("Highlights generation failed", e);
+      } finally {
+        setIsLoadingHighlights(false);
+      }
+    };
+    
+    if (activeRoute && reminderInfo.length > 0) {
+      fetchHighlights();
+    }
+  }, [activeRoute, reminderInfo]);
+
+  useEffect(() => {
+    if (!isRecording || !alertsEnabled || !activeRoute || !activeRoute.coordinates || isReviewMode) return;
+    const relatedReminders = reminderInfo.filter(r => {
+      const coords = getCoords(r);
+      return coords && isPointNearRoute(coords[0], coords[1], activeRoute.coordinates || [], 200);
+    });
+    relatedReminders.forEach(item => {
+      if (alertedItemsRef.current.has(item.id)) return;
+      const coords = getCoords(item);
+      if (coords) {
+        if (getDistanceFromLatLonInM(userPos[0], userPos[1], coords[0], coords[1]) < 100) {
+          setMessages(prev => [...prev, { id: `reminder-${item.id}`, sender: 'ai', text: item.ai_prompt || `Near ${item.name}`, timestamp: new Date() }]);
+          alertedItemsRef.current.add(item.id);
+        }
+      }
+    });
+  }, [userPos, reminderInfo, activeRoute, isRecording, alertsEnabled, isReviewMode]);
+
+  // Initialize userPos to the start of the active route if available
+  useEffect(() => {
+    if (activeRoute?.coordinates && activeRoute.coordinates.length > 0 && !isRecording) {
+      const startCoord = activeRoute.coordinates[0];
+      setUserPos(startCoord);
+      setRecordedPath([startCoord]);
+    }
+  }, [activeRoute, isRecording]);
+
+  useEffect(() => {
+    if (!isRecording || isReviewMode) return;
+    
+    // In a real app, this would use the device GPS. 
+    // Since we are mocking teammate synchronization and locations:
+    // If the user's current pos is still the default and we have a route, snap to start
+    if (activeRoute?.coordinates && activeRoute.coordinates.length > 0 && recordedPath.length <= 1) {
+      setUserPos(activeRoute.coordinates[0]);
+    }
+
     const geoId = navigator.geolocation.watchPosition(
       async (position) => {
-        // 1. Get real coordinates
-        const { latitude, longitude } = position.coords;
-        const newPos: [number, number] = [latitude, longitude];
+        // For testing/demo purposes, we might want to slightly offset real GPS if it's wildly off the HK routes
+        let lat = position.coords.latitude;
+        let lng = position.coords.longitude;
+        
+        // If we're testing on a desktop nowhere near HK, force snap to route for demo
+        if (activeRoute?.coordinates && activeRoute.coordinates.length > 0 && 
+            getDistanceFromLatLonInM(lat, lng, activeRoute.coordinates[0][0], activeRoute.coordinates[0][1]) > 50000) {
+            lat = activeRoute.coordinates[0][0];
+            lng = activeRoute.coordinates[0][1];
+        }
 
-        // 2. Update map display (React State)
+        const newPos: [number, number] = [lat, lng];
         setUserPos(newPos);
         setRecordedPath(prev => [...prev, newPos]);
-
-        // 3. 🛡️ Geofencing detection (calculated per coordinate)
-        if (riskZones.length > 0) {
-            riskZones.forEach(zone => {
-                const dist = getDistanceFromLatLonInM(latitude, longitude, zone.latitude, zone.longitude);
-                // If distance is less than defined radius (e.g. 50m)
-                if (dist < (zone.radius || 50)) {
-                    // Trigger red alert
-                    alert(`⚠️ Warning: you have entered a risk area (${zone.type}).\n${zone.message}`);
-                    // You can also call setShowSOS(true) here for auto-popup
-                }
-            });
-        }
-
-        // 4. ☁️ Upload to Supabase (every 10 seconds)
-        const now = Date.now();
-        if (now - lastUploadRef.current > 10000) { 
-           lastUploadRef.current = now;
-           
-           console.log("Uploading location...", latitude, longitude);
-           await supabase.from('locations').insert({
-             session_id: sessionId, 
-             user_id: userId,       
-             latitude: latitude,
-             longitude: longitude
-           });
+        
+        // Sync to database so teammates can see
+        if (Date.now() - lastUploadRef.current > 10000 && teamId) { 
+           lastUploadRef.current = Date.now();
+           // In a real app we'd update a real-time table. Updating team_members last_lat/last_lng
+           await supabase.from('team_members')
+             .update({ last_lat: lat, last_lng: lng })
+             .eq('team_id', teamId)
+             .eq('user_id', userId);
+             
+           // Also log to locations for history
+           await supabase.from('locations').insert({ session_id: sessionId, user_id: userId, latitude: lat, longitude: lng });
         }
       },
-      (err) => console.error("GPS Error:", err),
-      { enableHighAccuracy: true } // Request high-accuracy GPS
+      (err) => console.error(err), { 
+         enableHighAccuracy: true,
+         timeout: 10000,
+         maximumAge: 5000
+      }
     );
-
-    // Cleanup: Close GPS on unmount or stop recording
     return () => navigator.geolocation.clearWatch(geoId);
-  }, [isRecording, riskZones, sessionId, userId]);
+  }, [isRecording, isReviewMode, sessionId, userId, teamId, activeRoute]);
 
-  // --- 📍 Update 8: Core Logic - Real-time teammate tracking ---
-  useEffect(() => {
-      // Subscribe to database changes
-      const channel = supabase
-        .channel('teammate-tracker')
-        .on(
-            'postgres_changes',
-            { event: 'INSERT', schema: 'public', table: 'locations', filter: `session_id=eq.${sessionId}` },
-            (payload) => {
-                const newLoc = payload.new;
-                // Ignore if it's our own data
-                if (newLoc.user_id === userId) return;
-
-                // Update teammate location state
-                setTeammates(prev => {
-                    // If teammate exists, update coordinates
-                    const exists = prev.find(t => t.id === newLoc.user_id);
-                    if (exists) {
-                        return prev.map(t => t.id === newLoc.user_id ? { ...t, lat: newLoc.latitude, lng: newLoc.longitude } : t);
-                    }
-                    // Add if new teammate (name is hardcoded for now)
-                    return [...prev, {
-                        id: newLoc.user_id,
-                        name: 'New Teammate',
-                        lat: newLoc.latitude,
-                        lng: newLoc.longitude,
-                        status: 'active',
-                        avatar: 'https://picsum.photos/40/40'
-                    }];
-                });
-            }
-        )
-        .subscribe();
-
-      return () => { supabase.removeChannel(channel); };
-  }, [sessionId, userId]);
-
-  useEffect(() => {
-    // Simulate User & Teammate Movement every 1s
-    const interval = setInterval(() => {
-        // 1. Move User randomly slightly
-        if (isRecording) {
-            setUserPos(prev => {
-                const newLat = prev[0] + (Math.random() - 0.3) * 0.0001; // Bias slightly north
-                const newLng = prev[1] + (Math.random() - 0.4) * 0.0001;
-                const newPos: [number, number] = [newLat, newLng];
-                setRecordedPath(path => [...path, newPos]);
-                return newPos;
-            });
-        }
-
-        // 2. Move Teammates (even if not recording, they move)
-        setTeammates(prev => prev.map(t => ({
-            ...t,
-            lat: t.lat + (Math.random() - 0.5) * 0.00015,
-            lng: t.lng + (Math.random() - 0.5) * 0.00015
-        })));
-
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isRecording]);
-
-  // --- Map Effect ---
   useEffect(() => {
     const anyWindow = window as any;
     const L = anyWindow.L;
     if (!mapContainerRef.current || !L) return;
-
-    // Initialize map once when L and container are ready
     if (!mapInstanceRef.current) {
-        const initialView: [number, number] = activeRoute ? USER_START_POS : [22.3193, 114.1694]; // Default to central HK
-        const initialZoom = activeRoute ? 15 : 11;
+        const initialView = activeRoute?.coordinates?.[0] || USER_START_POS;
+        const initialZoom = activeRoute ? 15 : 12; // Zoom out for general view in demo mode
+        const map = L.map(mapContainerRef.current, { zoomControl: false, attributionControl: false }).setView(initialView, initialZoom);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png').addTo(map);
+        if (activeRoute?.coordinates) {
+            const color = isReviewMode ? '#666' : '#2E7D32';
+            const routeLine = L.polyline(activeRoute.coordinates, { color, weight: 6, opacity: 0.8 }).addTo(map);
+            setTimeout(() => map.fitBounds(routeLine.getBounds(), { padding: [50, 50] }), 100);
+        }
+        recordedPolylineRef.current = L.polyline([], { color: isReviewMode ? '#D32F2F' : '#FF5722', weight: 5 }).addTo(map);
         
-        const map = L.map(mapContainerRef.current, {
-            zoomControl: false,
-            attributionControl: false
-        }).setView(initialView, initialZoom);
+        // Render Reminder Info (Facilities & Risks)
 
-        // Revert to CartoDB Light for a cleaner look
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-            maxZoom: 19,
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-        }).addTo(map);
-
-        // Dragon's Back Route Highlight (High Precision)
-        L.polyline(
-          DRAGONS_BACK_COORDINATES,
-          { color: '#2E7D32', weight: 6, opacity: 0.6, lineCap: 'round', lineJoin: 'round' }
-        ).addTo(map);
-
-        // Recorded Path Line (Dynamic)
-        recordedPolylineRef.current = L.polyline([], { color: '#2E7D32', weight: 5 }).addTo(map);
-
-        // User Marker
-        const userIcon = L.divIcon({
-            className: 'custom-user-marker',
-            html: `<div style="background-color: #2563EB; width: 14px; height: 14px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.4);"></div>`,
-            iconSize: [14, 14]
-        });
-        userMarkerRef.current = L.marker(USER_START_POS, { icon: userIcon, zIndexOffset: 1000 }).addTo(map);
-
+        if (!isReviewMode && activeRoute) {
+          const userChar = (user?.user_metadata?.name || user?.email || 'Me').charAt(0).toUpperCase();
+          const userIcon = L.divIcon({ 
+            html: `<div style="background-color: #2563EB; color: white; width: 28px; height: 28px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${userChar}</div>`,
+            className: '',
+            iconSize: [28, 28],
+            iconAnchor: [14, 14]
+          });
+          userMarkerRef.current = L.marker(initialView, { icon: userIcon, zIndexOffset: 1000 }).addTo(map);
+        } else if (activeRoute?.coordinates && isReviewMode) {
+          recordedPolylineRef.current.setLatLngs(activeRoute.coordinates);
+          ((activeRoute as any).historyWaypoints || []).forEach((wp: any) => {
+             const icon = L.divIcon({ html: `<div style="background-color: #F59E0B; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white;"></div>` });
+             L.marker([wp.lat, wp.lng], { icon }).addTo(map);
+          });
+        }
         mapInstanceRef.current = map;
+        
+        // Fix Leaflet partial rendering issue when container size changes
+        setTimeout(() => {
+          map.invalidateSize();
+        }, 300);
     }
+    if (userMarkerRef.current) userMarkerRef.current.setLatLng(userPos);
+    if (recordedPolylineRef.current && isReviewMode) { /* Review mode line is static */ }
+  }, [userPos, activeRoute, isReviewMode, reminderInfo]);
 
-    // Update User Marker
-    if (userMarkerRef.current && mapInstanceRef.current) {
-        userMarkerRef.current.setLatLng(userPos);
-        // Only auto-pan if recording AND a route is selected
-        if (mode === 'map' && isRecording && activeRoute) {
-            mapInstanceRef.current.panTo(userPos);
-        }
-    }
-
-    // Update Recorded Polyline
-    if (recordedPolylineRef.current) {
-        recordedPolylineRef.current.setLatLngs(recordedPath);
-    }
-
-    // Update Teammates
-    teammates.forEach(t => {
-        let marker = teammateMarkersRef.current[t.id];
-        if (!marker) {
-            const teamIcon = L.divIcon({
-                className: 'custom-team-marker',
-                html: `<div style="background-color: #FF6F00; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white;"></div>`,
-                iconSize: [12, 12]
-            });
-            marker = L.marker([t.lat, t.lng], { icon: teamIcon }).addTo(mapInstanceRef.current).bindPopup(t.name);
-            teammateMarkersRef.current[t.id] = marker;
-        } else {
-            marker.setLatLng([t.lat, t.lng]);
-        }
-    });
-
-    // Ensure Leaflet recalculates size when tab / layout changes
+  useEffect(() => {
     if (mapInstanceRef.current) {
       setTimeout(() => {
-        try {
-          mapInstanceRef.current.invalidateSize();
-        } catch {
-          // ignore
-        }
-      }, 0);
+        mapInstanceRef.current.invalidateSize();
+      }, 300);
     }
+  }, [mode]);
 
-  }, [userPos, teammates, recordedPath, isRecording, mode]);
+  // Handle Reminder Markers (Facilities & Risks)
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const L = (window as any).L;
+    if (!map || !L) return;
 
+    console.log('DEBUG: CompanionView updating markers, count:', reminderInfo.length);
 
-  // Handle adding markers dynamically
-  const addMapMarker = (type: 'photo' | 'marker') => {
-      const anyWindow = window as any;
-      const L = anyWindow.L;
-      if (!mapInstanceRef.current || !L) return;
-      
-      const newWaypoint: Waypoint = {
-          id: Date.now().toString(),
-          lat: userPos[0],
-          lng: userPos[1],
-          type: type,
-          note: type === 'photo' ? 'Photo taken here' : 'Marked location'
-      };
+    // Clear existing reminder markers
+    reminderMarkersRef.current.forEach(m => m.remove());
+    reminderMarkersRef.current = [];
 
-      setWaypoints(prev => [...prev, newWaypoint]);
+    if (reminderInfo.length === 0) return;
 
-      const iconHtml = type === 'photo' 
-          ? `<div class="bg-blue-500 text-white p-1.5 rounded-lg shadow-lg"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></div>`
-          : `<div class="bg-red-500 text-white p-1 rounded-full shadow-lg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg></div>`;
+    reminderInfo.forEach(r => {
+      const coords = getCoords(r);
+      if (coords) {
+        console.log(`DEBUG: CompanionView adding marker for ${r.name} at ${coords}`);
+        const isRisk = r.category?.toLowerCase() === 'risk';
+        const bgColor = isRisk ? '#EF4444' : '#3B82F6';
+        const emoji = isRisk ? '⚠️' : 'ℹ️'; 
+        
+        let specificEmoji = emoji;
+        const nameLower = r.name?.toLowerCase() || '';
+        const promptLower = r.ai_prompt?.toLowerCase() || '';
+        
+        if (!isRisk) {
+           if (nameLower.includes('toilet') || nameLower.includes('restroom')) specificEmoji = '🚻';
+           else if (nameLower.includes('water')) specificEmoji = '💧';
+           else if (nameLower.includes('rest') || nameLower.includes('pavilion')) specificEmoji = '🪑';
+           else if (nameLower.includes('camp')) specificEmoji = '⛺';
+        } else {
+           if (nameLower.includes('slip') || promptLower.includes('slip')) specificEmoji = '🥾';
+           else if (nameLower.includes('animal') || nameLower.includes('dog') || nameLower.includes('monkey')) specificEmoji = '🐕';
+           else if (nameLower.includes('steep') || nameLower.includes('cliff')) specificEmoji = '⛰️';
+           else if (nameLower.includes('sun') || nameLower.includes('heat')) specificEmoji = '☀️';
+        }
 
-      const icon = L.divIcon({
-          className: 'custom-wp-marker',
-          html: iconHtml,
+        const remIcon = L.divIcon({ 
+          html: `
+            <div style="
+              background-color: ${bgColor}; 
+              color: white; 
+              width: 24px; 
+              height: 24px; 
+              border-radius: 50%; 
+              border: 2px solid white; 
+              display: flex; 
+              align-items: center; 
+              justify-content: center; 
+              font-size: 12px; 
+              box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            ">${specificEmoji}</div>`,
+          className: '',
           iconSize: [24, 24],
-          iconAnchor: [12, 24]
+          iconAnchor: [12, 12],
+          popupAnchor: [0, -12]
+        });
+
+        const popupContent = `
+          <div style="font-family: system-ui, sans-serif; padding: 4px; max-width: 200px;">
+            <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 6px; border-bottom: 1px solid #eee; padding-bottom: 4px;">
+               <span style="font-size: 16px;">${specificEmoji}</span>
+               <strong style="color: ${bgColor}; font-size: 14px;">${r.name}</strong>
+            </div>
+            <div style="font-size: 12px; color: #4b5563; line-height: 1.4;">
+               ${r.ai_prompt || (isRisk ? 'Please be careful in this area.' : 'Facility available here.')}
+            </div>
+          </div>
+        `;
+
+        const marker = L.marker(coords, { icon: remIcon, zIndexOffset: 2000 })
+          .addTo(map)
+          .bindPopup(popupContent, { closeButton: false });
+        
+        reminderMarkersRef.current.push(marker);
+      }
+    });
+  }, [reminderInfo, mapInstanceRef.current]);
+
+  // Handle teammate markers
+  useEffect(() => {
+    if (!mapInstanceRef.current || isReviewMode) return;
+    const map = mapInstanceRef.current;
+    const L = (window as any).L;
+    if (!L) return;
+
+    // Clear existing teammate markers that are no longer in teamMembers
+    Object.keys(teammateMarkersRef.current).forEach(id => {
+      if (!teamMembers.find(m => m.user_id === id)) {
+        teammateMarkersRef.current[id].remove();
+        delete teammateMarkersRef.current[id];
+      }
+    });
+
+    // Update or add markers for team members (excluding self)
+    teamMembers.forEach(member => {
+      if (member.user_id === userId) return;
+      
+      // Fetch teammates' last known location. If missing, fall back to the route start to keep them clustered
+      let lat = member.last_lat;
+      let lng = member.last_lng;
+      
+      if (!lat || !lng) {
+         if (activeRoute?.coordinates && activeRoute.coordinates.length > 0) {
+            lat = activeRoute.coordinates[0][0] + (Math.random() - 0.5) * 0.0005; // tiny offset
+            lng = activeRoute.coordinates[0][1] + (Math.random() - 0.5) * 0.0005;
+         } else {
+            lat = USER_START_POS[0] + (Math.random() - 0.5) * 0.01;
+            lng = USER_START_POS[1] + (Math.random() - 0.5) * 0.01;
+         }
+      }
+
+      const char = (member.user_name || 'U').charAt(0).toUpperCase();
+      const icon = L.divIcon({
+        html: `<div style="background-color: #EA580C; color: white; width: 28px; height: 28px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${char}</div>`,
+        className: '',
+        iconSize: [28, 28],
+        iconAnchor: [14, 14]
       });
 
-      L.marker(userPos, { icon }).addTo(mapInstanceRef.current).bindPopup(newWaypoint.note || '');
-  };
+      if (teammateMarkersRef.current[member.user_id]) {
+        teammateMarkersRef.current[member.user_id].setLatLng([lat, lng]);
+      } else {
+        teammateMarkersRef.current[member.user_id] = L.marker([lat, lng], { icon }).addTo(map).bindPopup(member.user_name);
+      }
+    });
+  }, [teamMembers, userId, isReviewMode]);
 
-
-  const formatTime = (seconds: number) => {
-      const h = Math.floor(seconds / 3600);
-      const m = Math.floor((seconds % 3600) / 60);
-      const s = seconds % 60;
-      return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
-
+  // --- Handlers ---
   const handleStartRecording = () => {
     setIsRecording(true);
-    setShowRecordingToast(true);
-    setTimeout(() => setShowRecordingToast(false), 3000);
+    setHasStartedHike(true);
+    timerRef.current = setInterval(() => setElapsedTime(prev => prev + 1), 1000);
   };
 
-  const handleFinishRecording = () => {
-      setIsRecording(false);
-      setShowSaveDialog(true);
-  };
-
-  const confirmSave = () => {
-      const newTrack: Track = {
-          id: Date.now().toString(),
-          name: trackName,
-          date: new Date(),
-          duration: formatTime(elapsedTime),
-          distance: (recordedPath.length * 0.005).toFixed(2) + ' km', // Mock calculation
-          coordinates: recordedPath,
-          waypoints: waypoints
-      };
-      onSaveTrack(newTrack);
-  };
-
-  // AI Route Search and Recommendation
-  const handleAIRouteSearch = () => {
-    // Moved to PlanningView
-  };
-
-  const handleRouteSearch = (query: string) => {
-    // Moved to PlanningView
-  };
-
-  const handleSendMessage = async () => {
-    if (!inputText.trim()) return;
-
-    const newUserMsg: Message = {
-      id: Date.now().toString(),
-      sender: 'user',
-      senderName: user.name || 'Me', // 使用真实姓名
-      text: inputText,
-      timestamp: new Date()
-    };
-
-    setMessages(prev => [...prev, newUserMsg]);
+  const handleSendMessage = async (text?: string) => {
+    const finalMsg = text || inputText;
+    if (!finalMsg.trim()) return;
+    
+    // 1. Add user message
+    const userMsg: Message = { id: Date.now().toString(), sender: 'user', text: finalMsg, timestamp: new Date() };
+    setMessages(prev => [...prev, userMsg]);
     setInputText('');
 
-    if (chatType === 'team') {
-        setTimeout(() => {
-            const teamMsg: Message = {
-                id: (Date.now() + 1).toString(),
-                sender: 'teammate',
-                senderName: 'Alice',
-                text: "We are taking a break at the pavilion.",
-                timestamp: new Date()
-            };
-            setMessages(prev => [...prev, teamMsg]);
-        }, 1500);
-    } else {
-        try {
-            const context = {
-                location: `Lat: ${userPos[0].toFixed(4)}, Lng: ${userPos[1].toFixed(4)}`,
-                route: activeRoute?.name || 'Dragon\'s Back',
-                teammates: teammates.map(t => t.name)
-            };
-            const loadingId = 'loading-' + Date.now();
-            setMessages(prev => [...prev, { id: loadingId, sender: 'ai', text: 'Thinking...', timestamp: new Date() }]);
-            const responseText = await generateHikingAdvice(newUserMsg.text, context);
-            const aiMsg: Message = {
-              id: (Date.now() + 1).toString(),
-              sender: 'ai',
-              text: responseText,
-              timestamp: new Date()
-            };
-            setMessages(prev =>
-              prev.filter(m => m.id !== loadingId).concat(aiMsg)
-            );
+    // 2. Call Gemini if in AI mode
+    if (chatType === 'ai') {
+      try {
+        // Add a "Thinking..." message
+        const thinkingId = 'thinking-' + Date.now();
+        setMessages(prev => [...prev, { id: thinkingId, sender: 'ai', text: '...', timestamp: new Date() }]);
 
-            // Optional: Save chat to chat_logs for AI context
-            if (saveChatLogs) {
-              try {
-                await supabase.from('chat_logs').insert({
-                  user_id: user.id, // 【关键】添加用户 ID
-                  session_id: sessionId,
-                  user_message: newUserMsg.text,
-                  ai_response: responseText,
-                  context_location: {
-                    lat: userPos[0],
-                    lng: userPos[1]
-                  }
-                });
-              } catch (e) {
-                console.error('Failed to save chat log', e);
-              }
-            }
-        } catch (error) { console.error(error); }
+        const responseText = await generateHikingAdvice(finalMsg, {
+          location: `${userPos[0].toFixed(4)}, ${userPos[1].toFixed(4)}`,
+          route: activeRoute?.name || 'Unknown',
+          teammates: teamMembers.map(m => m.user_name),
+          routeInfo: activeRoute?.description,
+          extraData: {
+            nearby_reminders: reminderInfo.filter(r => {
+               const coords = parseGeographyPoint(r.coordinates);
+               return coords && getDistanceFromLatLonInM(userPos[0], userPos[1], coords[0], coords[1]) < 500;
+            }).map(r => ({ name: r.name, info: r.ai_prompt, category: r.category })),
+            current_route: activeRoute ? {
+              distance: activeRoute.distance,
+              duration: activeRoute.duration,
+              difficulty: activeRoute.difficulty
+            } : null
+          }
+        });
+
+        // Replace thinking message with real response
+        setMessages(prev => prev.map(m => m.id === thinkingId ? { ...m, text: responseText } : m));
+      } catch (err) {
+        console.error("Gemini advice failed", err);
+      }
     }
   };
 
-  const handleSOS = () => {
-      setShowSOS(true);
+  const formatTime = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    setIsDragging(true);
+    dragStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      cardX: cardPos.x,
+      cardY: cardPos.y
+    };
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging) return;
+      const dx = e.clientX - dragStartRef.current.x;
+      const dy = e.clientY - dragStartRef.current.y;
+      setCardPos({
+        x: dragStartRef.current.cardX + dx,
+        y: dragStartRef.current.cardY + dy
+      });
+    };
+    const handleMouseUp = () => setIsDragging(false);
+
+    if (isDragging) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging]);
+
+  const handleAddNote = async () => {
+    if (!noteContent.trim()) return;
+    setIsNoteSubmitting(true);
+    try {
+      const { error } = await supabase.from('team_member_emotions').insert({
+        team_id: teamId,
+        user_id: userId,
+        content: noteContent,
+        latitude: userPos[0],
+        longitude: userPos[1],
+        created_at: new Date().toISOString()
+      });
+
+      if (error) throw error;
+      
+      setMessages(prev => [...prev, {
+        id: `note-${Date.now()}`,
+        sender: 'user',
+        text: `📍 Saved a note: "${noteContent}"`,
+        timestamp: new Date()
+      }]);
+      
+      setNoteContent('');
+      setShowAddNote(false);
+    } catch (e) {
+      console.error('Failed to save note:', e);
+      alert('Failed to save note');
+    } finally {
+      setIsNoteSubmitting(false);
+    }
+  };
+
+  const renderMarkdown = (text: string) => {
+    if (!text) return null;
+
+    // Split by newlines to handle block-level formatting
+    const lines = text.split('\n');
+    const elements: React.ReactNode[] = [];
+    let currentList: React.ReactNode[] = [];
+
+    const flushList = () => {
+      if (currentList.length > 0) {
+        elements.push(
+          <ul key={`list-${elements.length}`} className="list-disc pl-5 my-2 space-y-1 text-gray-700">
+            {currentList}
+          </ul>
+        );
+        currentList = [];
+      }
+    };
+
+    lines.forEach((line, lineIdx) => {
+      // Trim right whitespace
+      const trimmedLine = line.trimEnd();
+      
+      // Handle empty lines
+      if (trimmedLine === '') {
+        flushList();
+        elements.push(<br key={`br-${lineIdx}`} />);
+        return;
+      }
+
+      // Handle Bullet Lists (* item or - item)
+      const listMatch = trimmedLine.match(/^(\*|-)\s+(.*)/);
+      
+      // Inline formatting function (Bold text)
+      const renderInline = (inlineText: string, keyPrefix: string) => {
+        const parts = inlineText.split(/(\*\*.*?\*\*)/g);
+        return parts.map((part, i) => {
+          if (part.startsWith('**') && part.endsWith('**')) {
+            return <strong key={`${keyPrefix}-bold-${i}`} className="font-bold text-gray-900">{part.slice(2, -2)}</strong>;
+          }
+          return <span key={`${keyPrefix}-text-${i}`}>{part}</span>;
+        });
+      };
+
+      if (listMatch) {
+        // It's a list item
+        const itemContent = listMatch[2];
+        currentList.push(
+          <li key={`li-${lineIdx}`} className="leading-relaxed">
+            {renderInline(itemContent, `li-${lineIdx}`)}
+          </li>
+        );
+      } else {
+        // Regular paragraph/line
+        flushList();
+        elements.push(
+          <div key={`p-${lineIdx}`} className="leading-relaxed my-1">
+            {renderInline(trimmedLine, `p-${lineIdx}`)}
+          </div>
+        );
+      }
+    });
+
+    flushList(); // Make sure to flush any remaining list items
+
+    return <div className="markdown-body">{elements}</div>;
   };
 
   return (
-    <div className="flex flex-col h-full bg-gray-100 relative">
-      {/* Recording Started Toast */}
-      {showRecordingToast && (
-        <div className="absolute top-32 left-1/2 -translate-x-1/2 z-[2000] animate-bounce-in">
-          <div className="bg-black/80 backdrop-blur-md text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 border border-white/20">
-            <div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse"></div>
-            <span className="text-sm font-bold tracking-tight">Track recording started</span>
-          </div>
-        </div>
+    <div className="flex flex-col h-full bg-gray-50 relative overflow-hidden">
+      {/* Back Button */}
+      {!hasStartedHike && onBack && (
+        <button onClick={onBack} className="absolute top-6 left-4 z-[500] p-3 bg-white shadow-lg rounded-full border"><ArrowLeft size={20}/></button>
       )}
 
       {/* SOS Overlay */}
       {showSOS && (
           <div className="absolute inset-0 z-[2000] bg-red-600/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-white text-center animate-fade-in">
             <ShieldAlert size={64} className="mb-4 animate-bounce" />
-            <h2 className="text-4xl font-black mb-2 tracking-tighter">SOS ACTIVE</h2>
-            <p className="mb-6 opacity-90">Emergency Mode Engaged</p>
-            
-            <div className="bg-white/20 p-6 rounded-2xl w-full mb-6 border border-white/30 backdrop-blur-md">
-                <div className="text-xs uppercase opacity-70 mb-1 font-bold">Your Current Location</div>
-                <div className="font-mono text-3xl font-bold tracking-widest flex flex-col items-center justify-center">
-                    <span>{userPos[0].toFixed(5)} N</span>
-                    <span>{userPos[1].toFixed(5)} E</span>
-                </div>
-                <div className="text-sm mt-3 flex items-center justify-center gap-1 opacity-80 border-t border-white/20 pt-2">
-                    <MapPin size={14} /> Altitude: {riskStats.altitude}m
-                </div>
+            <h2 className="text-4xl font-black mb-2">SOS ACTIVE</h2>
+            <div className="bg-white/20 p-6 rounded-2xl w-full mb-6 border backdrop-blur-md">
+                <div className="text-xs uppercase opacity-70 mb-1">Your Location</div>
+                <div className="font-mono text-2xl font-bold">{userPos[0].toFixed(5)} N, {userPos[1].toFixed(5)} E</div>
             </div>
-
             <div className="w-full space-y-3">
-                <a href="tel:999" className="block w-full bg-white text-red-600 py-4 rounded-xl font-bold text-xl shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform">
-                    <Phone size={24} /> Call Emergency (999)
-                </a>
-                <button 
-                    onClick={() => {
-                        const sosMsg: Message = {
-                            id: Date.now().toString(),
-                            sender: 'user',
-                            text: `🚨 SOS! Emergency at ${userPos[0].toFixed(5)}, ${userPos[1].toFixed(5)}. Altitude: ${riskStats.altitude}m.`,
-                            timestamp: new Date()
-                        };
-                        setMessages(prev => [...prev, sosMsg]);
-                        alert("Emergency alert sent to teammates and emergency contacts!");
-                        setChatType('team'); // Switch to team chat to see context
-                        setMode('chat'); // Switch to chat mode
-                        setShowSOS(false);
-                    }}
-                    className="block w-full bg-black/40 hover:bg-black/50 text-white py-4 rounded-xl font-bold text-lg border border-white/20 flex items-center justify-center gap-2 active:scale-95 transition-transform"
-                >
-                     <Bell size={20} /> Notify Teammates
-                </button>
-                <button 
-                    onClick={() => setShowSOS(false)} 
-                    className="block w-full py-4 text-white/80 font-bold text-sm mt-4"
-                >
-                    Cancel Alert
-                </button>
+                <a href="tel:999" className="block w-full bg-white text-red-600 py-4 rounded-xl font-bold text-xl flex items-center justify-center gap-2 shadow-lg"><Phone size={24} /> Call 999</a>
+                <button onClick={() => setShowSOS(false)} className="block w-full py-4 text-white/80 font-bold">Cancel</button>
             </div>
           </div>
       )}
 
-      {/* Save Dialog Overlay */}
+      {/* Save Dialog */}
       {showSaveDialog && (
           <div className="absolute inset-0 z-[1000] bg-black/60 flex items-center justify-center p-4">
               <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl">
-                  <h3 className="text-xl font-bold mb-4">Save Hike</h3>
+                  <h3 className="text-xl font-bold mb-4">End Hike</h3>
                   <div className="mb-4">
                       <label className="text-xs text-gray-500 font-bold uppercase">Track Name</label>
-                      <input 
-                        value={trackName} 
-                        onChange={e => setTrackName(e.target.value)}
-                        className="w-full border-b-2 border-hike-green py-2 text-lg focus:outline-none"
-                      />
+                      <input value={trackName} onChange={e => setTrackName(e.target.value)} className="w-full border-b-2 border-hike-green py-2 text-lg outline-none"/>
                   </div>
                   <div className="flex gap-4 text-sm text-gray-600 mb-6">
-                      <div className="flex-1 bg-gray-50 p-2 rounded">
-                          <div className="text-xs">Duration</div>
-                          <div className="font-mono font-bold">{formatTime(elapsedTime)}</div>
-                      </div>
-                      <div className="flex-1 bg-gray-50 p-2 rounded">
-                          <div className="text-xs">Points</div>
-                          <div className="font-mono font-bold">{waypoints.length}</div>
-                      </div>
+                      <div className="flex-1 bg-gray-50 p-2 rounded"><div>Time</div><div className="font-bold">{formatTime(elapsedTime)}</div></div>
+                      <div className="flex-1 bg-gray-50 p-2 rounded"><div>Dist</div><div className="font-bold">{(recordedPath.length * 0.005).toFixed(2)} km</div></div>
                   </div>
-                  <button onClick={confirmSave} className="w-full bg-hike-green text-white py-3 rounded-xl font-bold shadow-lg">
-                      Save to Library
-                  </button>
-                  <button onClick={() => setShowSaveDialog(false)} className="w-full mt-3 text-gray-500 py-2 text-sm">
-                      Discard
-                  </button>
+                  <button onClick={() => { onSaveTrack({ id: Date.now().toString(), name: trackName, date: new Date(), duration: formatTime(elapsedTime), distance: (recordedPath.length * 0.005).toFixed(2) + 'km', difficulty: activeRoute?.difficulty || 0, coordinates: recordedPath, waypoints: waypoints }); setShowSaveDialog(false); if(onBack) onBack(); }} className="w-full bg-gray-800 text-white py-3 rounded-xl font-bold mb-3">Save to Profile</button>
+                  {isLeader && <button onClick={() => setShowUploadModal(true)} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">Share to Community</button>}
+                  <button onClick={() => setShowSaveDialog(false)} className="w-full text-gray-500 py-2 text-sm">Cancel</button>
               </div>
           </div>
       )}
 
-      {/* Add Note / Time Capsule Modal */}
-      {showAddNote && (
-        <div className="absolute inset-0 z-[1500] bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl">
-            <div className="flex justify-between items-center mb-3">
-              <h3 className="text-lg font-bold text-gray-900">Add Note</h3>
-              <button
-                onClick={() => setShowAddNote(false)}
-                className="text-gray-400 hover:text-gray-600 text-sm"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="space-y-3 text-sm">
-              <div>
-                <label className="text-xs text-gray-500 font-bold uppercase">Type</label>
-                <div className="flex gap-2 mt-1">
-                  <button
-                    onClick={() => setNoteType('user_note')}
-                    className={`flex-1 py-1.5 rounded-full text-xs font-bold ${
-                      noteType === 'user_note'
-                        ? 'bg-hike-green text-white'
-                        : 'bg-gray-100 text-gray-600'
-                    }`}
-                  >
-                    Personal Note
-                  </button>
-                  <button
-                    onClick={() => setNoteType('cultural_info')}
-                    className={`flex-1 py-1.5 rounded-full text-xs font-bold ${
-                      noteType === 'cultural_info'
-                        ? 'bg-hike-green text-white'
-                        : 'bg-gray-100 text-gray-600'
-                    }`}
-                  >
-                    Cultural Info
-                  </button>
-                </div>
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 font-bold uppercase">Message</label>
-                <textarea
-                  value={noteContent}
-                  onChange={e => setNoteContent(e.target.value)}
-                  placeholder="Leave a message for future hikers..."
-                  className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-hike-green h-20 resize-none"
-                />
-              </div>
-              <p className="text-[10px] text-gray-400">
-                Location will use your current GPS: {userPos[0].toFixed(4)}, {userPos[1].toFixed(4)}.
-              </p>
-            </div>
-            <button
-              onClick={async () => {
-                if (!noteContent.trim()) return;
-                try {
-                  await supabase.from('location_messages').insert({
-                    user_id: userId,
-                    latitude: userPos[0],
-                    longitude: userPos[1],
-                    message_content: noteContent,
-                    message_type: noteType
-                  });
-                } catch (e) {
-                  console.error('Failed to save location message', e);
-                } finally {
-                  setNoteContent('');
-                  setShowAddNote(false);
-                }
-              }}
-              className="w-full mt-4 bg-hike-green text-white py-2.5 rounded-xl font-bold text-sm shadow-md active:scale-95 transition-transform"
-            >
-              Save Note
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Trail Report Modal */}
-      {showReportIssue && (
-        <div className="absolute inset-0 z-[1500] bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl">
-            <div className="flex justify-between items-center mb-3">
-              <h3 className="text-lg font-bold text-gray-900">Report Trail Issue</h3>
-              <button
-                onClick={() => setShowReportIssue(false)}
-                className="text-gray-400 hover:text-gray-600 text-sm"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="space-y-3 text-sm">
-              <div>
-                <label className="text-xs text-gray-500 font-bold uppercase">Issue Type</label>
-                <select
-                  value={issueType}
-                  onChange={e => setIssueType(e.target.value as any)}
-                  className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-hike-green bg-transparent"
-                >
-                  <option value="blockage">Blockage</option>
-                  <option value="trash">Trash</option>
-                  <option value="safety_hazard">Safety Hazard</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 font-bold uppercase">Description</label>
-                <textarea
-                  value={issueDescription}
-                  onChange={e => setIssueDescription(e.target.value)}
-                  placeholder="Describe what you see on the trail..."
-                  className="w-full border-b border-gray-200 py-2 focus:outline-none focus:border-hike-green h-20 resize-none"
-                />
-              </div>
-              <p className="text-[10px] text-gray-400">
-                Location will use your current GPS: {userPos[0].toFixed(4)}, {userPos[1].toFixed(4)}.
-              </p>
-            </div>
-            <button
-              onClick={async () => {
-                if (!issueDescription.trim()) return;
-                try {
-                  await supabase.from('trail_reports').insert({
-                    user_id: userId,
-                    latitude: userPos[0],
-                    longitude: userPos[1],
-                    issue_type: issueType,
-                    description: issueDescription,
-                    image_url: null
-                  });
-                } catch (e) {
-                  console.error('Failed to submit trail report', e);
-                } finally {
-                  setIssueDescription('');
-                  setShowReportIssue(false);
-                }
-              }}
-              className="w-full mt-4 bg-hike-green text-white py-2.5 rounded-xl font-bold text-sm shadow-md active:scale-95 transition-transform"
-            >
-              Submit Report
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Map Area */}
+      {/* Map Section */}
       <div className={`relative transition-all duration-300 ${mode === 'map' ? 'h-[68%]' : 'h-[38%]'}`}>
         <div ref={mapContainerRef} className="absolute inset-0 bg-gray-200 z-0" />
         
-        {/* Risk Shield Dashboard */}
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[450] flex flex-col items-center">
-            <div className={`bg-white/90 backdrop-blur-md rounded-2xl shadow-lg border border-white/50 p-2 transition-all duration-300 ${deviceConnected ? 'w-[90vw] max-w-xs' : 'w-auto'}`}>
-                <div className="flex items-center justify-around gap-2 text-xs font-bold text-gray-700">
-                    <div className="flex flex-col items-center">
-                        <Thermometer size={14} className="text-orange-500 mb-0.5" />
-                        <span>{riskStats.temp}°C</span>
-                    </div>
-                     <div className="flex flex-col items-center">
-                        <Wind size={14} className="text-blue-500 mb-0.5" />
-                        <span>{riskStats.humidity}%</span>
-                    </div>
-                     <div className="flex flex-col items-center">
-                        <Mountain size={14} className="text-gray-600 mb-0.5" />
-                        <span>{riskStats.altitude}m</span>
-                    </div>
-                    {/* Device Toggle */}
-                    <button 
-                        onClick={() => setDeviceConnected(!deviceConnected)}
-                        className={`p-1 rounded bg-gray-100 ${deviceConnected ? 'text-hike-green' : 'text-gray-400'}`}
-                    >
-                        <Zap size={14} fill={deviceConnected ? "currentColor" : "none"} />
-                    </button>
-                </div>
-
-                {/* Extended Stats (Device) */}
-                {deviceConnected && (
-                    <div className="mt-2 pt-2 border-t border-gray-100 grid grid-cols-3 gap-2 animate-fade-in">
-                        <div className="flex flex-col items-center">
-                             <div className="flex items-center gap-1 text-red-500">
-                                <Heart size={12} fill="currentColor" className="animate-pulse" />
-                                <span className="font-bold text-sm">{riskStats.heartRate}</span>
-                             </div>
-                             <span className="text-[9px] text-gray-400">BPM</span>
-                        </div>
-                        <div className="flex flex-col items-center">
-                             <div className="flex items-center gap-1 text-green-600">
-                                <Battery size={12} />
-                                <span className="font-bold text-sm">{riskStats.battery}%</span>
-                             </div>
-                             <span className="text-[9px] text-gray-400">Device</span>
-                        </div>
-                        <div className="flex flex-col items-center">
-                             <div className="flex items-center gap-1 text-orange-600">
-                                <Flame size={12} />
-                                <span className="font-bold text-sm">{Math.floor(riskStats.calories)}</span>
-                             </div>
-                             <span className="text-[9px] text-gray-400">Kcal</span>
-                        </div>
-                    </div>
-                )}
-            </div>
-        </div>
-
-        {/* Recording Status (Moved below risk shield) */}
-        {isRecording && (
-            <div className="absolute top-24 left-4 z-[400]">
-                <div className="bg-red-500 text-white px-3 py-1 rounded-full text-xs font-bold shadow animate-pulse flex items-center gap-1">
-                   <div className="w-2 h-2 bg-white rounded-full"></div> REC {formatTime(elapsedTime)}
-                </div>
-            </div>
+        {!activeRoute && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[500] bg-yellow-500/90 text-white px-4 py-2 rounded-full text-xs font-bold shadow-lg backdrop-blur-md">
+            DEMO MODE
+          </div>
         )}
 
-        {/* Map Controls */}
-        <div className="absolute top-20 right-4 z-[400] flex flex-col gap-2">
-            {/* SOS Button - Positioned prominently */}
-            <button 
-                onClick={handleSOS}
-                className="bg-red-600 text-white p-3 rounded-full shadow-lg font-bold flex items-center justify-center animate-pulse active:scale-95 transition-transform border-2 border-white"
-            >
-                <span className="font-black text-[10px] leading-tight">SOS</span>
-            </button>
-            {/* Add Note */}
-            <button
-                onClick={() => setShowAddNote(true)}
-                className="bg-white/90 text-gray-700 p-2.5 rounded-full shadow flex items-center justify-center active:scale-95 transition-transform"
-            >
-                <MessageSquare size={18} className="text-hike-green" />
-            </button>
-            {/* Report Issue */}
-            <button
-                onClick={() => setShowReportIssue(true)}
-                className="bg-white/90 text-gray-700 p-2.5 rounded-full shadow flex items-center justify-center active:scale-95 transition-transform"
-            >
-                <AlertCircle size={18} className="text-red-500" />
-            </button>
-        </div>
+        {isReviewMode && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[500] bg-gray-900/90 text-white px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 backdrop-blur-md">
+            <History size={14} className="text-orange-400" /> REVIEW MODE
+          </div>
+        )}
 
-        <div className="absolute bottom-10 right-4 z-[400] flex flex-col gap-2">
-             {/* Record Toggle */}
-            <div className="relative">
-              {!isRecording && (
-                <div className="absolute right-14 top-1/2 -translate-y-1/2 whitespace-nowrap bg-hike-green text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-lg animate-bounce-x">
-                  Tap here to record track
-                  <div className="absolute -right-1 top-1/2 -translate-y-1/2 w-2 h-2 bg-hike-green rotate-45"></div>
+        {isRecording && (
+          <div className="absolute top-6 left-16 z-[500] bg-white/80 backdrop-blur-md text-gray-700 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-2 shadow-md border border-gray-200 animate-fade-in">
+            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+            <span className="opacity-70 uppercase tracking-tighter">Rec</span>
+            <span className="font-mono">{formatTime(elapsedTime)}</span>
+          </div>
+        )}
+
+        {/* Floating Draggable Summary Card (Start Hike + Highlights Merged) */}
+        {!hasStartedHike && activeRoute && (
+          <div 
+            style={{ left: cardPos.x, top: cardPos.y }}
+            className="absolute z-[600] pointer-events-auto"
+          >
+             <div className="bg-white/95 backdrop-blur-md rounded-3xl p-5 shadow-2xl border border-white/40 max-w-[280px]">
+                <div 
+                   onMouseDown={handleMouseDown}
+                   className="cursor-move flex flex-col items-center mb-4 bg-gray-50/50 -m-5 p-4 rounded-t-3xl border-b border-gray-100"
+                >
+                   <div className="w-8 h-1 bg-gray-300 rounded-full mb-3"></div>
+                   <h2 className="text-base font-black text-gray-900 leading-tight text-center">{activeRoute.name}</h2>
                 </div>
-              )}
-              <button 
-                  onClick={() => isRecording ? handleFinishRecording() : handleStartRecording()}
-                  className={`p-3 rounded-full shadow-lg text-white font-bold transition-all active:scale-95 ${isRecording ? 'bg-red-500' : 'bg-hike-green'}`}
-              >
-                  {isRecording ? <Square size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
-              </button>
-            </div>
+                
+                <div className="mt-4 space-y-4">
+                   <div className="grid grid-cols-2 gap-2">
+                      <div className="bg-hike-light/50 p-2.5 rounded-xl text-center">
+                         <div className="text-[9px] font-bold text-hike-green uppercase tracking-wider mb-0.5">Dist</div>
+                         <div className="text-xs font-bold text-gray-800">{activeRoute.distance}</div>
+                      </div>
+                      <div className="bg-hike-light/50 p-2.5 rounded-xl text-center">
+                         <div className="text-[9px] font-bold text-hike-green uppercase tracking-wider mb-0.5">Time</div>
+                         <div className="text-xs font-bold text-gray-800">{activeRoute.duration}</div>
+                      </div>
+                   </div>
+                   
+                   <div className="bg-orange-50 p-2 rounded-xl border border-orange-100 flex items-center justify-between px-3">
+                      <div className="text-[9px] font-bold text-orange-600 uppercase tracking-wider">Difficulty</div>
+                      <div className="text-xs font-bold text-gray-800">{activeRoute.difficulty}/5</div>
+                   </div>
 
-            {/* Tools */}
-            {isRecording && (
-                <>
-                <button onClick={() => addMapMarker('marker')} className="bg-white/90 p-2.5 rounded-full shadow text-gray-700 hover:bg-white active:scale-95">
-                    <MapPin size={20} className="text-red-500" />
-                </button>
-                <button onClick={() => addMapMarker('photo')} className="bg-white/90 p-2.5 rounded-full shadow text-gray-700 hover:bg-white active:scale-95">
-                    <Camera size={20} className="text-blue-500" />
-                </button>
-                </>
-            )}
-        </div>
+                   <div className="flex flex-col gap-2 pt-2">
+                      {isLeader && teamId && !hasStartedHike && !isReviewMode && (
+                        <button 
+                          onClick={async () => { 
+                          try {
+                            // Diagnostics: Check types
+                            console.log('Confirmation details:', { teamId, routeId: activeRoute.id, routeName: activeRoute.name });
+
+                            // Check if the route exists in the DB to avoid Foreign Key violation
+                            let canPassId = false;
+                            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(activeRoute.id);
+                            
+                            if (isUuid) {
+                               const { data } = await supabase.from('routes').select('id').eq('id', activeRoute.id).single();
+                               if (data) canPassId = true;
+                            }
+
+                            const { error } = await supabase
+                              .from('teams')
+                              .update({ 
+                                 status: 'confirmed', 
+                                 target_route_id: canPassId ? activeRoute.id : null, 
+                                 target_route_name: activeRoute.name 
+                              })
+                              .eq('id', teamId); 
+                            
+                            if (error) {
+                               console.error('Supabase update error:', error);
+                               alert(`Failed to confirm route: ${error.message || 'Unknown database error'}`);
+                               return;
+                            }
+                            alert('✅ Route confirmed! Your team can now join this hike.'); 
+                          } catch (e) {
+                            console.error('Catch error:', e);
+                            alert('Failed to confirm route due to a client-side error.');
+                          }
+                          }} 
+                          className="w-full bg-blue-600 text-white py-2.5 rounded-xl font-bold text-xs shadow-md active:scale-95 transition-all flex items-center justify-center gap-2"
+                        >
+                          <Check size={14}/> Confirm for Team
+                        </button>
+                      )}
+                      {!isReviewMode && (
+                        <button onClick={handleStartRecording} className="w-full bg-gradient-to-r from-hike-green to-emerald-600 text-white py-2.5 rounded-xl font-bold text-xs shadow-md active:scale-95 transition-all flex items-center justify-center gap-2"><Navigation size={14}/> Start Hike</button>
+                      )}
+                   </div>
+                </div>
+             </div>
+          </div>
+        )}
+
+        {/* Side Controls */}
+        {hasStartedHike && !isReviewMode && (
+          <div className="absolute top-24 right-4 z-[400] flex flex-col gap-3">
+             <button onClick={() => setShowSOS(true)} className="bg-red-600 text-white p-4 rounded-full shadow-2xl font-black text-[11px] border-2 border-white/30">SOS</button>
+             {isLeader && <button onClick={() => setShowSaveDialog(true)} className="bg-blue-600 text-white p-3.5 rounded-full shadow-lg border border-white/30"><Upload size={20}/></button>}
+             <button onClick={() => setShowAddNote(true)} className="bg-white p-3.5 rounded-full shadow-lg text-orange-500 border border-white/30"><Star size={20}/></button>
+             <button onClick={() => { setIsRecording(false); setShowSaveDialog(true); }} className="bg-green-600 text-white p-3.5 rounded-full shadow-lg border border-white/30"><Check size={20}/></button>
+             <button onClick={() => { if(window.confirm('Quit?')) onBack && onBack(); }} className="bg-white p-3.5 rounded-full shadow-lg text-gray-500 border border-white/30"><X size={20}/></button>
+          </div>
+        )}
         
-        {/* Resize Handle */}
-        <div 
-          onClick={() => setMode(mode === 'map' ? 'chat' : 'map')}
-          className="absolute bottom-0 left-0 right-0 h-6 bg-white rounded-t-3xl flex items-center justify-center cursor-pointer shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] z-[401]"
-        >
-           <div className="w-12 h-1 bg-gray-300 rounded-full"></div>
-        </div>
-
-        {/* --- iOS Style Hint --- */}
-        {!activeRoute && (
-          <div className="absolute bottom-8 left-3 z-[400] pointer-events-none">
-            <div className="bg-white/70 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/50 shadow-sm flex items-center gap-2">
-              <div className="w-2 h-2 bg-hike-green rounded-full animate-pulse"></div>
-              <span className="text-[10px] font-semibold text-gray-600 tracking-tight uppercase">Demo: Dragon's Back Area</span>
-            </div>
+        {/* Info Toggle (Left Side) */}
+        {activeRoute && (
+          <div className="absolute top-24 left-4 z-[500]">
+            <button onClick={() => setShowRouteInfo(true)} className="p-3 bg-white/90 rounded-full shadow-lg text-hike-green border border-white/40 backdrop-blur-sm"><Info size={24} /></button>
           </div>
         )}
       </div>
 
-      {/* Chat Area */}
-      <div className="flex-1 bg-white flex flex-col pb-20 overflow-hidden">
-         <div className="flex border-b border-gray-100 shrink-0">
-            <button 
-               onClick={() => {
-                 setChatType('ai');
-                 setMode('chat');
-               }}
-               className={`flex-1 py-3 text-sm font-bold flex items-center justify-center gap-2 ${mode === 'chat' && chatType === 'ai' ? 'text-hike-green border-b-2 border-hike-green' : 'text-gray-400'}`}
+      {/* Emotion Note Modal */}
+      {showAddNote && (
+        <div className="absolute inset-0 z-[2000] bg-black/40 backdrop-blur-sm flex items-center justify-center p-6 animate-fade-in" onClick={() => setShowAddNote(false)}>
+           <div className="bg-white rounded-[40px] w-full max-w-md p-8 shadow-2xl relative animate-scale-in" onClick={e => e.stopPropagation()}>
+              <button onClick={() => setShowAddNote(false)} className="absolute top-6 right-6 p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"><X size={20}/></button>
+              
+              <div className="mb-6">
+                 <h3 className="text-2xl font-black text-gray-900 mb-2">How are you feeling?</h3>
+                 <div className="h-1.5 w-12 bg-orange-500 rounded-full"></div>
+                 <p className="text-xs text-gray-500 mt-2 font-medium">Your location & mood will be shared with the team.</p>
+              </div>
+
+              <div className="space-y-4">
+                 <div className="bg-gray-50 p-4 rounded-3xl border border-gray-100">
+                    <textarea 
+                       value={noteContent} 
+                       onChange={e => setNoteContent(e.target.value)} 
+                       placeholder="Write something about this spot..." 
+                       className="w-full bg-transparent border-none outline-none resize-none h-32 text-gray-700 font-medium"
+                    />
+                 </div>
+                 
+                 <div className="flex gap-2">
+                    {['🏔️ Great', '😴 Tired', '📸 Scenic', '💧 Need Water'].map(tag => (
+                       <button 
+                          key={tag} 
+                          onClick={() => setNoteContent(prev => prev ? `${prev} ${tag}` : tag)}
+                          className="px-3 py-1.5 bg-gray-100 rounded-full text-[10px] font-bold text-gray-600 hover:bg-gray-200"
+                       >
+                          {tag}
+                       </button>
+                    ))}
+                 </div>
+
+                 <button 
+                    onClick={handleAddNote} 
+                    disabled={isNoteSubmitting || !noteContent.trim()}
+                    className="w-full bg-gradient-to-r from-orange-500 to-red-500 text-white py-4 rounded-[24px] font-bold shadow-lg shadow-orange-500/30 active:scale-95 transition-all disabled:opacity-50 mt-4"
+                 >
+                    {isNoteSubmitting ? 'Saving...' : 'Pin to Map'}
+                 </button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* Info Modal (Centered) */}
+      {showRouteInfo && (
+        <div className="absolute inset-0 z-[2000] bg-black/40 backdrop-blur-sm flex items-center justify-center p-6" onClick={() => setShowRouteInfo(false)}>
+           <div className="bg-white rounded-[40px] w-full max-w-md p-8 shadow-2xl overflow-y-auto max-h-[85vh] relative" onClick={e => e.stopPropagation()}>
+              <button onClick={() => setShowRouteInfo(false)} className="absolute top-6 right-6 p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"><X size={20}/></button>
+              
+              <div className="mb-8">
+                 <h3 className="text-2xl font-black text-gray-900 mb-2">Route Overview</h3>
+                 <div className="h-1.5 w-12 bg-hike-green rounded-full"></div>
+              </div>
+
+              <div className="space-y-8 select-text">
+                 <div className="bg-gray-50 p-5 rounded-[32px] border border-gray-100 select-text">
+                    <h4 className="font-bold text-gray-900 mb-2 select-text">{activeRoute?.name}</h4>
+                    <p className="text-sm text-gray-600 leading-relaxed select-text">{activeRoute?.description}</p>
+                 </div>
+
+                 <div className="select-text">
+                    <h4 className="font-bold text-sm text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                       <Sparkles size={16} className="text-orange-500"/> Route Highlights
+                    </h4>
+                    {isLoadingHighlights ? (
+                       <div className="flex flex-col items-center py-6 space-y-2">
+                          <div className="w-6 h-6 border-2 border-hike-green border-t-transparent rounded-full animate-spin"></div>
+                          <p className="text-[10px] text-gray-400 font-bold animate-pulse uppercase tracking-wider">AI Generating Highlights...</p>
+                       </div>
+                    ) : aiHighlights ? (
+                       <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-sm select-text">
+                          <div className="prose prose-sm text-gray-600 font-medium leading-relaxed whitespace-pre-wrap select-text">
+                             {renderMarkdown(aiHighlights)}
+                          </div>
+                       </div>
+                    ) : (
+                       <div className="space-y-4 select-text">
+                          {reminderInfo.filter(r => { 
+                             const coords = getCoords(r);
+                             return coords && isPointNearRoute(coords[0], coords[1], activeRoute?.coordinates || [], 200); 
+                          }).map(r => (
+                             <div key={r.id} className="p-4 bg-white rounded-2xl border border-gray-100 shadow-sm flex gap-3 select-text">
+                                <div className={`mt-0.5 p-2 rounded-xl ${r.category?.toLowerCase() === 'risk' ? 'bg-red-50 text-red-500' : 'bg-blue-50 text-blue-500'}`}>
+                                   {r.category?.toLowerCase() === 'risk' ? <AlertCircle size={18}/> : <Info size={18}/>}
+                                </div>
+                                <div className="select-text">
+                                   <div className="text-sm font-bold text-gray-900 mb-1 select-text">{r.name}</div>
+                                   <p className="text-xs text-gray-500 italic select-text">"{r.ai_prompt}"</p>
+                                </div>
+                             </div>
+                          ))}
+                       </div>
+                    )}
+                 </div>
+              </div>
+              
+              <button onClick={() => setShowRouteInfo(false)} className="w-full mt-10 bg-gray-900 text-white py-4 rounded-[24px] font-bold shadow-lg active:scale-95 transition-all">Got it</button>
+           </div>
+        </div>
+      )}
+
+      {/* Chat Section */}
+      <div className="flex-1 bg-white flex flex-col pb-20 overflow-hidden relative">
+         {/* Drag Handle to collapse */}
+         {mode === 'chat' && (
+            <div 
+               onClick={() => setMode('map')} 
+               className="w-full h-6 flex items-center justify-center cursor-pointer bg-gray-50 border-b border-gray-200"
+               title="Collapse Panel"
             >
-               <div className="bg-green-100 p-1 rounded text-hike-green"><MessageSquare size={14}/></div>
-               AI Guide
+               <div className="w-12 h-1.5 bg-gray-300 rounded-full"></div>
+            </div>
+         )}
+         <div className="flex border-b border-gray-100">
+            <button onClick={() => {setChatType('ai'); setMode('chat');}} className={`flex-1 py-4 text-sm font-bold ${chatType === 'ai' ? 'text-hike-green border-b-2 border-hike-green' : 'text-gray-400'}`}>AI Guide</button>
+            <button onClick={() => {setChatType('team'); setMode('chat');}} className={`flex-1 py-4 text-sm font-bold ${chatType === 'team' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400'}`}>
+               <span className={isRefreshingTeam ? 'animate-pulse' : ''}>Team ({teamId ? actualTeamSize : (activeRoute ? 1 : 0)})</span>
             </button>
-            {activeRoute && (
-              <button 
-                onClick={() => {
-                  setChatType('team');
-                  setMode('chat');
-                }}
-                className={`flex-1 py-3 text-sm font-bold flex items-center justify-center gap-2 ${mode === 'chat' && chatType === 'team' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400'}`}
-              >
-                <div className="bg-blue-100 p-1 rounded text-blue-600"><Users size={14}/></div>
-                Team (2)
-              </button>
+         </div>
+         <div className="flex-1 overflow-y-auto p-4 bg-gray-50 select-text">
+            {chatType === 'team' ? (
+               <div className="space-y-4 select-text">
+                  <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 select-text">
+                     <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2"><Users size={14}/> {teamId ? 'Team Members' : (activeRoute ? 'Solo Hiker' : 'No Team')}</h4>
+                     <div className="space-y-3 select-text">
+                        {!activeRoute && !teamId && (
+                           <div className="text-sm text-gray-500 text-center py-4">Demo Mode - No active team</div>
+                        )}
+                        {teamMembers.map((member, idx) => (
+                           <div key={idx} className="p-3 bg-gray-50 rounded-xl border flex flex-col gap-2 select-text">
+                              <div className="flex justify-between items-center select-text"><span className="font-bold text-gray-900 text-sm select-text">{member.user_name}</span><span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 uppercase">{member.role}</span></div>
+                              <div className="flex flex-wrap gap-1.5 select-text">{member.user_mood && <span className="text-[10px] bg-white px-2 py-0.5 rounded border select-text">Mood: {member.user_mood}</span>}{member.user_difficulty && <span className="text-[10px] bg-white px-2 py-0.5 rounded border select-text">Level: {member.user_difficulty}</span>}</div>
+                              {member.user_condition && <p className="text-[10px] text-gray-500 italic mt-1 border-t pt-1 select-text">"{member.user_condition}"</p>}
+                           </div>
+                        ))}
+                     </div>
+                  </div>
+               </div>
+            ) : (
+               <div className="space-y-4 select-text">
+                  {messages.length < 2 && (
+                     <div className="grid grid-cols-4 gap-2 mb-4">
+                        <button onClick={() => handleSendMessage("Where is water?")} className="flex flex-col items-center bg-white p-2 rounded-xl border shadow-sm"><Droplet size={18} className="text-blue-500 mb-1"/><span className="text-[9px]">Water</span></button>
+                        <button onClick={() => handleSendMessage("Rest points?")} className="flex flex-col items-center bg-white p-2 rounded-xl border shadow-sm"><Tent size={18} className="text-green-500 mb-1"/><span className="text-[9px]">Rest</span></button>
+                        <button onClick={() => handleSendMessage("Help!")} className="flex flex-col items-center bg-white p-2 rounded-xl border shadow-sm"><AlertCircle size={18} className="text-red-500 mb-1"/><span className="text-[9px]">Help</span></button>
+                        <button onClick={() => handleSendMessage("Trail Info")} className="flex flex-col items-center bg-white p-2 rounded-xl border shadow-sm"><Info size={18} className="text-gray-400 mb-1"/><span className="text-[9px]">Info</span></button>
+                     </div>
+                  )}
+                  {messages.map((m, i) => (
+                    <div key={i} className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'} select-text`}>
+                       <div className={`max-w-[85%] p-3 rounded-2xl text-sm whitespace-pre-wrap select-text ${m.sender === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-white text-gray-800 border rounded-bl-none shadow-sm'}`}>
+                         {renderMarkdown(m.text)}
+                       </div>
+                    </div>
+                  ))}
+               </div>
             )}
          </div>
-
-
-         <div className="flex-1 overflow-y-auto p-4 bg-gray-50">
-             {/* Chat messages ... same as before */}
-             {chatType === 'ai' && messages.length < 2 && (
-                <div className="grid grid-cols-4 gap-2 mb-4">
-                    {/* Reusing prompt buttons logic inline for brevity */}
-                    <button onClick={() => { setInputText("Where is water?"); setMode('chat'); }} className="flex flex-col items-center bg-white p-2 rounded-xl border"><Droplet size={18} className="text-blue-500 mb-1"/><span className="text-[10px]">Water</span></button>
-                    <button onClick={() => { setInputText("Rest points?"); setMode('chat'); }} className="flex flex-col items-center bg-white p-2 rounded-xl border"><Tent size={18} className="text-green-500 mb-1"/><span className="text-[10px]">Rest</span></button>
-                    <button onClick={() => { setInputText("Emergency exit?"); setMode('chat'); }} className="flex flex-col items-center bg-white p-2 rounded-xl border"><AlertCircle size={18} className="text-red-500 mb-1"/><span className="text-[10px]">Help</span></button>
-                    <button onClick={() => { setInputText("Toilet?"); setMode('chat'); }} className="flex flex-col items-center bg-white p-2 rounded-xl border"><Info size={18} className="text-gray-500 mb-1"/><span className="text-[10px]">Info</span></button>
-                </div>
-             )}
-             <div className="space-y-4">
-                {messages.filter(m => chatType === 'ai' ? m.sender !== 'teammate' : m.sender !== 'ai').map((msg) => (
-                    <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        {msg.sender !== 'user' && (
-                            <div className={`w-8 h-8 rounded-full flex items-center justify-center mr-2 shrink-0 ${msg.sender === 'ai' ? 'bg-hike-green text-white' : 'bg-orange-500 text-white'}`}>
-                                {msg.sender === 'ai' ? <MapIcon size={14} /> : msg.senderName?.[0]}
-                            </div>
-                        )}
-                        <div className={`max-w-[85%] p-3 rounded-2xl text-sm shadow-sm ${
-                            msg.sender === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-white text-gray-800 border border-gray-100 rounded-bl-none'
-                        }`}>
-                            {msg.text}
-                        </div>
-                    </div>
-                ))}
-                <div ref={messagesEndRef} />
-            </div>
-         </div>
-
-         <div className="p-3 bg-white border-t border-gray-100 shrink-0">
-            <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-full px-2">
-               <input 
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  onFocus={() => setMode('chat')}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                  placeholder={chatType === 'ai' ? "Ask AI..." : "Message team..."}
-                  className="flex-1 bg-transparent border-none outline-none text-sm px-2 py-2"
-               />
-               <button onClick={handleSendMessage} className="p-2 bg-hike-green text-white rounded-full shadow-sm">
-                  <Send size={16} />
-               </button>
-            </div>
-         </div>
+         {!isReviewMode && (
+           <div className="p-3 bg-white border-t flex items-center gap-2">
+              <input value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} placeholder="Ask AI..." className="flex-1 bg-gray-100 rounded-full px-4 py-2 text-sm outline-none" />
+              <button onClick={() => handleSendMessage()} className="p-2 bg-hike-green text-white rounded-full shadow-sm"><Send size={18} /></button>
+           </div>
+         )}
       </div>
+
+      {/* Upload Modal (Moved here to ensure it's on top) */}
+      {showUploadModal && (
+        <div className="absolute inset-0 z-[3000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-fade-in" onClick={() => setShowUploadModal(false)}>
+           <div className="bg-white rounded-3xl w-full max-w-sm p-6 shadow-2xl relative" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center mb-6"><h3 className="text-xl font-bold">Share Route</h3><button onClick={() => setShowUploadModal(false)}><X size={20}/></button></div>
+              <div className="space-y-4">
+                 <div><label className="text-xs font-bold text-gray-500 uppercase">Route Name</label><input value={uploadData.name} onChange={e => setUploadData({...uploadData, name: e.target.value})} className="w-full border-b-2 border-hike-green py-2 outline-none"/></div>
+                 <div><label className="text-xs font-bold text-gray-500 uppercase">Description</label><textarea value={uploadData.description} onChange={e => setUploadData({...uploadData, description: e.target.value})} className="w-full border-b py-2 h-20 outline-none resize-none"/></div>
+                 <button onClick={handleConfirmUpload} disabled={isUploadingRoute} className="w-full bg-hike-green text-white py-3.5 rounded-xl font-bold shadow-lg disabled:opacity-50">{isUploadingRoute ? 'Uploading...' : 'Confirm & Share'}</button>
+              </div>
+           </div>
+        </div>
+      )}
     </div>
   );
 };
