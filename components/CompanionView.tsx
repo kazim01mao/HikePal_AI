@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Message, Route, Teammate, Track, Waypoint, User } from '../types';
 import { generateHikingAdvice } from '../services/geminiService';
-import { uploadRouteToCommunity } from '../services/segmentRoutingService';
-import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, Upload, Compass, MapPin, Thermometer, Wind, Phone, Bell, ShieldAlert, ArrowLeft, Star, Activity, Clock, X, Edit3, Check, ChevronRight, History, Sparkles } from 'lucide-react';
+import { uploadRouteToCommunity, mergeSegmentCoordinates } from '../services/segmentRoutingService';
+import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, Upload, Compass, MapPin, Thermometer, Wind, Phone, Bell, ShieldAlert, ArrowLeft, Star, Activity, Clock, X, Edit3, Check, ChevronRight, History as HistoryIcon, Sparkles } from 'lucide-react';
 import { supabase } from '../utils/supabaseClient';
 import { DRAGONS_BACK_COORDINATES } from '../utils/trailData';
 
@@ -27,6 +27,35 @@ function isPointNearRoute(pointLat: number, pointLng: number, routeCoords: [numb
     if (getDistanceFromLatLonInM(pointLat, pointLng, coord[0], coord[1]) <= maxDistanceMeters) return true;
   }
   return false;
+}
+
+function normalizePoint(p: any): [number, number] | null {
+  if (Array.isArray(p) && p.length >= 2) {
+    const [a, b] = p;
+    if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b)) {
+      return [a, b];
+    }
+  }
+  if (p && typeof p === 'object' && typeof p.lat === 'number' && typeof p.lng === 'number') {
+    if (Number.isFinite(p.lat) && Number.isFinite(p.lng)) {
+      return [p.lat, p.lng];
+    }
+  }
+  return null;
+}
+
+function isValidPoint(p: any): p is [number, number] {
+  return normalizePoint(p) !== null;
+}
+
+function sanitizeRouteCoords(raw: any): [number, number][] {
+  if (!Array.isArray(raw)) return [];
+  const cleaned: [number, number][] = [];
+  raw.forEach((pt) => {
+    const norm = normalizePoint(pt);
+    if (norm) cleaned.push(norm);
+  });
+  return cleaned;
 }
 
 function parseGeographyPoint(geoObj: any): [number, number] | null {
@@ -78,8 +107,6 @@ interface CompanionViewProps {
   isLeader?: boolean;
 }
 
-const USER_START_POS: [number, number] = [22.25, 114.17]; // Centered on Hong Kong Island
-
 const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSaveTrack, userId, sessionId, onBack, teamId, isLeader }) => {
   // --- States ---
   const [cardPos, setCardPos] = useState({ x: 16, y: 100 });
@@ -102,9 +129,9 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadData, setUploadData] = useState({ name: '', description: '', tags: '' });
   const [riskStats, setRiskStats] = useState({ temp: 24, humidity: 78, condition: 'Sunny' });
-  const [userPos, setUserPos] = useState<[number, number]>(USER_START_POS);
+  const [userPos, setUserPos] = useState<[number, number] | null>(null);
   const [teammates, setTeammates] = useState<Teammate[]>([]);
-  const [recordedPath, setRecordedPath] = useState<[number, number][]>([USER_START_POS]);
+  const [recordedPath, setRecordedPath] = useState<[number, number][]>([]);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
   const [reminderInfo, setReminderInfo] = useState<any[]>([]);
   const alertedItemsRef = useRef<Set<string>>(new Set());
@@ -118,6 +145,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [isRefreshingTeam, setIsRefreshingTeam] = useState(false);
   const [aiHighlights, setAiHighlights] = useState<string>('');
   const [isLoadingHighlights, setIsLoadingHighlights] = useState(false);
+  const [toast, setToast] = useState<{message: string, type: 'success' | 'info'} | null>(null);
   
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
@@ -127,6 +155,18 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const recordedPolylineRef = useRef<any>(null);
   const timerRef = useRef<any>(null);
   const isReviewMode = !!(activeRoute as any)?.isReview;
+
+  // Handle auto-trigger for reminders prompt
+  useEffect(() => {
+    if (activeRoute && (activeRoute as any).trigger_reminders_prompt) {
+       // Clear the flag so it only triggers once
+       (activeRoute as any).trigger_reminders_prompt = false;
+       // Automatically send a message
+       setTimeout(() => {
+          handleSendMessage("Please give me the reminders for this route at once.");
+       }, 1000);
+    }
+  }, [activeRoute]);
 
   // --- Functions ---
   const loadTeamMembers = async () => {
@@ -191,7 +231,10 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       });
       setShowUploadModal(false);
       alert('✅ Shared successfully!');
-    } catch (e) { console.error(e); } finally { setIsUploadingRoute(false); }
+    } catch (e) {
+      console.error(e);
+      alert('Failed to share route. Please try again.');
+    } finally { setIsUploadingRoute(false); }
   };
 
   // --- Effects ---
@@ -238,7 +281,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   }, [activeRoute, reminderInfo]);
 
   useEffect(() => {
-    if (!isRecording || !alertsEnabled || !activeRoute || !activeRoute.coordinates || isReviewMode) return;
+    if (!isRecording || !alertsEnabled || !activeRoute || !activeRoute.coordinates || isReviewMode || !userPos) return;
     const relatedReminders = reminderInfo.filter(r => {
       const coords = getCoords(r);
       return coords && isPointNearRoute(coords[0], coords[1], activeRoute.coordinates || [], 200);
@@ -257,8 +300,9 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
   // Initialize userPos to the start of the active route if available
   useEffect(() => {
-    if (activeRoute?.coordinates && activeRoute.coordinates.length > 0 && !isRecording) {
-      const startCoord = activeRoute.coordinates[0];
+    const safeCoords = sanitizeRouteCoords(activeRoute?.coordinates);
+    if (safeCoords.length > 0 && !isRecording) {
+      const startCoord = safeCoords[0];
       setUserPos(startCoord);
       setRecordedPath([startCoord]);
     }
@@ -267,29 +311,22 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   useEffect(() => {
     if (!isRecording || isReviewMode) return;
     
-    // In a real app, this would use the device GPS. 
-    // Since we are mocking teammate synchronization and locations:
-    // If the user's current pos is still the default and we have a route, snap to start
-    if (activeRoute?.coordinates && activeRoute.coordinates.length > 0 && recordedPath.length <= 1) {
-      setUserPos(activeRoute.coordinates[0]);
-    }
-
     const geoId = navigator.geolocation.watchPosition(
       async (position) => {
-        // For testing/demo purposes, we might want to slightly offset real GPS if it's wildly off the HK routes
-        let lat = position.coords.latitude;
-        let lng = position.coords.longitude;
-        
-        // If we're testing on a desktop nowhere near HK, force snap to route for demo
-        if (activeRoute?.coordinates && activeRoute.coordinates.length > 0 && 
-            getDistanceFromLatLonInM(lat, lng, activeRoute.coordinates[0][0], activeRoute.coordinates[0][1]) > 50000) {
-            lat = activeRoute.coordinates[0][0];
-            lng = activeRoute.coordinates[0][1];
-        }
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
 
         const newPos: [number, number] = [lat, lng];
         setUserPos(newPos);
         setRecordedPath(prev => [...prev, newPos]);
+        
+        // Update live polyline on map
+        if (recordedPolylineRef.current) {
+          recordedPolylineRef.current.addLatLng(newPos);
+          if (!activeRoute) {
+            mapInstanceRef.current?.panTo(newPos);
+          }
+        }
         
         // Sync to database so teammates can see
         if (Date.now() - lastUploadRef.current > 10000 && teamId) { 
@@ -316,16 +353,45 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   useEffect(() => {
     const anyWindow = window as any;
     const L = anyWindow.L;
-    if (!mapContainerRef.current || !L) return;
+    if (!mapContainerRef.current || !L) {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+      return;
+    }
     if (!mapInstanceRef.current) {
-        const initialView = activeRoute?.coordinates?.[0] || USER_START_POS;
+        const safeCoords = sanitizeRouteCoords(activeRoute?.coordinates);
+        const initialView = (safeCoords.length > 0) ? safeCoords[0] : [22.25, 114.17];
         const initialZoom = activeRoute ? 15 : 12; // Zoom out for general view in demo mode
+        const container = mapContainerRef.current;
+        (container as any)._leaflet_id = null;
+        container.innerHTML = '';
         const map = L.map(mapContainerRef.current, { zoomControl: false, attributionControl: false }).setView(initialView, initialZoom);
         L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png').addTo(map);
-        if (activeRoute?.coordinates) {
+        if (safeCoords.length > 0) {
             const color = isReviewMode ? '#666' : '#2E7D32';
-            const routeLine = L.polyline(activeRoute.coordinates, { color, weight: 6, opacity: 0.8 }).addTo(map);
-            setTimeout(() => map.fitBounds(routeLine.getBounds(), { padding: [50, 50] }), 100);
+            const routeLine = L.polyline(safeCoords, { color, weight: 6, opacity: 0.8 }).addTo(map);
+            
+            // Add Start/End markers for hiking mode
+            if (safeCoords.length > 0) {
+              const startIcon = L.divIcon({
+                  html: `<div style="background-color: #2E7D32; color: white; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">S</div>`,
+                  className: '', iconSize: [24, 24], iconAnchor: [12, 12]
+              });
+              const endIcon = L.divIcon({
+                  html: `<div style="background-color: #D32F2F; color: white; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">E</div>`,
+                  className: '', iconSize: [24, 24], iconAnchor: [12, 12]
+              });
+              L.marker(safeCoords[0], { icon: startIcon, zIndexOffset: 900 }).addTo(map).bindPopup('Start Point');
+              L.marker(safeCoords[safeCoords.length - 1], { icon: endIcon, zIndexOffset: 900 }).addTo(map).bindPopup('End Point');
+            }
+
+            // Ensure map fits trail perfectly after initialization
+            setTimeout(() => {
+              map.invalidateSize();
+              map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
+            }, 300);
         }
         recordedPolylineRef.current = L.polyline([], { color: isReviewMode ? '#D32F2F' : '#FF5722', weight: 5 }).addTo(map);
         
@@ -340,11 +406,13 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
             iconAnchor: [14, 14]
           });
           userMarkerRef.current = L.marker(initialView, { icon: userIcon, zIndexOffset: 1000 }).addTo(map);
-        } else if (activeRoute?.coordinates && isReviewMode) {
-          recordedPolylineRef.current.setLatLngs(activeRoute.coordinates);
+        } else if (safeCoords.length > 0 && isReviewMode) {
+          recordedPolylineRef.current.setLatLngs(safeCoords);
           ((activeRoute as any).historyWaypoints || []).forEach((wp: any) => {
-             const icon = L.divIcon({ html: `<div style="background-color: #F59E0B; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white;"></div>` });
-             L.marker([wp.lat, wp.lng], { icon }).addTo(map);
+             if (wp && typeof wp.lat === 'number' && typeof wp.lng === 'number') {
+                const icon = L.divIcon({ html: `<div style="background-color: #F59E0B; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white;"></div>` });
+                L.marker([wp.lat, wp.lng], { icon }).addTo(map);
+             }
           });
         }
         mapInstanceRef.current = map;
@@ -352,11 +420,30 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         // Fix Leaflet partial rendering issue when container size changes
         setTimeout(() => {
           map.invalidateSize();
-        }, 300);
+          if (safeCoords.length > 0) {
+            const bounds = L.polyline(safeCoords).getBounds();
+            map.fitBounds(bounds, { padding: [40, 40] });
+          }
+        }, 500);
     }
-    if (userMarkerRef.current) userMarkerRef.current.setLatLng(userPos);
+    if (userMarkerRef.current && userPos && isValidPoint(userPos)) {
+      userMarkerRef.current.setLatLng(userPos);
+    }
     if (recordedPolylineRef.current && isReviewMode) { /* Review mode line is static */ }
   }, [userPos, activeRoute, isReviewMode, reminderInfo]);
+
+  useEffect(() => {
+    return () => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+      if (mapContainerRef.current) {
+        (mapContainerRef.current as any)._leaflet_id = null;
+        mapContainerRef.current.innerHTML = '';
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (mapInstanceRef.current) {
@@ -380,28 +467,50 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
     if (reminderInfo.length === 0) return;
 
-    reminderInfo.forEach(r => {
+    let markersToShow = reminderInfo;
+    if (isRecording && activeRoute && activeRoute.coordinates) {
+      markersToShow = reminderInfo.filter(r => {
+        const coords = getCoords(r);
+        return coords && isPointNearRoute(coords[0], coords[1], activeRoute.coordinates || [], 300);
+      });
+    }
+
+    markersToShow.forEach(r => {
       const coords = getCoords(r);
       if (coords) {
         console.log(`DEBUG: CompanionView adding marker for ${r.name} at ${coords}`);
         const isRisk = r.category?.toLowerCase() === 'risk';
-        const bgColor = isRisk ? '#EF4444' : '#3B82F6';
-        const emoji = isRisk ? '⚠️' : 'ℹ️'; 
+        const isCulture = r.category?.toLowerCase().includes('culture');
+        const bgColor = isRisk ? '#EF4444' : isCulture ? '#D97706' : '#3B82F6';
+        const emoji = isRisk ? '⚠️' : isCulture ? '🏛️' : 'ℹ️'; 
         
         let specificEmoji = emoji;
         const nameLower = r.name?.toLowerCase() || '';
+        const typeLower = r.type?.toLowerCase() || '';
         const promptLower = r.ai_prompt?.toLowerCase() || '';
+        const combinedText = `${nameLower} ${typeLower} ${promptLower}`;
         
         if (!isRisk) {
-           if (nameLower.includes('toilet') || nameLower.includes('restroom')) specificEmoji = '🚻';
-           else if (nameLower.includes('water')) specificEmoji = '💧';
-           else if (nameLower.includes('rest') || nameLower.includes('pavilion')) specificEmoji = '🪑';
-           else if (nameLower.includes('camp')) specificEmoji = '⛺';
+           if (combinedText.includes('toilet') || combinedText.includes('restroom')) specificEmoji = '🚻';
+           else if (combinedText.includes('water')) specificEmoji = '💧';
+           else if (combinedText.includes('rest') || combinedText.includes('pavilion') || combinedText.includes('bench')) specificEmoji = '🪑';
+           else if (combinedText.includes('camp')) specificEmoji = '⛺';
+           else if (combinedText.includes('view') || combinedText.includes('scenic') || combinedText.includes('photo')) specificEmoji = '📸';
+           else if (combinedText.includes('exit') || combinedText.includes('bail')) specificEmoji = '🚪';
+           else if (combinedText.includes('bus') || combinedText.includes('transport')) specificEmoji = '🚌';
+           else if (combinedText.includes('food') || combinedText.includes('restaurant')) specificEmoji = '🍜';
+           else if (combinedText.includes('beach')) specificEmoji = '🏖️';
+           else if (combinedText.includes('stone') || combinedText.includes('monument') || combinedText.includes('history') || combinedText.includes('boundary')) specificEmoji = '🗿';
+           else if (r.category?.toLowerCase().includes('culture')) specificEmoji = '🏛️';
         } else {
-           if (nameLower.includes('slip') || promptLower.includes('slip')) specificEmoji = '🥾';
-           else if (nameLower.includes('animal') || nameLower.includes('dog') || nameLower.includes('monkey')) specificEmoji = '🐕';
-           else if (nameLower.includes('steep') || nameLower.includes('cliff')) specificEmoji = '⛰️';
-           else if (nameLower.includes('sun') || nameLower.includes('heat')) specificEmoji = '☀️';
+           if (combinedText.includes('slip')) specificEmoji = '🥾';
+           else if (combinedText.includes('animal') || combinedText.includes('dog') || combinedText.includes('monkey') || combinedText.includes('boar')) specificEmoji = '🐗';
+           else if (combinedText.includes('steep') || combinedText.includes('cliff') || combinedText.includes('slope')) specificEmoji = '⛰️';
+           else if (combinedText.includes('sun') || combinedText.includes('heat')) specificEmoji = '☀️';
+           else if (combinedText.includes('snake')) specificEmoji = '🐍';
+           else if (combinedText.includes('bee') || combinedText.includes('insect')) specificEmoji = '🐝';
+           else if (combinedText.includes('river') || combinedText.includes('stream')) specificEmoji = '🌊';
+           else if (combinedText.includes('mud')) specificEmoji = '💩';
         }
 
         const remIcon = L.divIcon({ 
@@ -409,20 +518,20 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
             <div style="
               background-color: ${bgColor}; 
               color: white; 
-              width: 24px; 
-              height: 24px; 
+              width: 28px; 
+              height: 28px; 
               border-radius: 50%; 
               border: 2px solid white; 
               display: flex; 
               align-items: center; 
               justify-content: center; 
-              font-size: 12px; 
-              box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+              font-size: 14px; 
+              box-shadow: 0 3px 6px rgba(0,0,0,0.4);
             ">${specificEmoji}</div>`,
           className: '',
-          iconSize: [24, 24],
-          iconAnchor: [12, 12],
-          popupAnchor: [0, -12]
+          iconSize: [28, 28],
+          iconAnchor: [14, 14],
+          popupAnchor: [0, -14]
         });
 
         const popupContent = `
@@ -444,7 +553,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         reminderMarkersRef.current.push(marker);
       }
     });
-  }, [reminderInfo, mapInstanceRef.current]);
+  }, [reminderInfo, mapInstanceRef.current, isRecording, activeRoute]);
 
   // Handle teammate markers
   useEffect(() => {
@@ -462,35 +571,39 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     });
 
     // Update or add markers for team members (excluding self)
+    const safeCoords = sanitizeRouteCoords(activeRoute?.coordinates);
+
     teamMembers.forEach(member => {
       if (member.user_id === userId) return;
       
       // Fetch teammates' last known location. If missing, fall back to the route start to keep them clustered
-      let lat = member.last_lat;
-      let lng = member.last_lng;
+      let teammateLat = member.last_lat;
+      let teammateLng = member.last_lng;
       
-      if (!lat || !lng) {
-         if (activeRoute?.coordinates && activeRoute.coordinates.length > 0) {
-            lat = activeRoute.coordinates[0][0] + (Math.random() - 0.5) * 0.0005; // tiny offset
-            lng = activeRoute.coordinates[0][1] + (Math.random() - 0.5) * 0.0005;
+      if (typeof teammateLat !== 'number' || typeof teammateLng !== 'number') {
+         if (safeCoords.length > 0) {
+            teammateLat = safeCoords[0][0] + (Math.random() - 0.5) * 0.0005; // tiny offset
+            teammateLng = safeCoords[0][1] + (Math.random() - 0.5) * 0.0005;
          } else {
-            lat = USER_START_POS[0] + (Math.random() - 0.5) * 0.01;
-            lng = USER_START_POS[1] + (Math.random() - 0.5) * 0.01;
+            teammateLat = 22.25 + (Math.random() - 0.5) * 0.01;
+            teammateLng = 114.17 + (Math.random() - 0.5) * 0.01;
          }
       }
 
-      const char = (member.user_name || 'U').charAt(0).toUpperCase();
-      const icon = L.divIcon({
-        html: `<div style="background-color: #EA580C; color: white; width: 28px; height: 28px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${char}</div>`,
-        className: '',
-        iconSize: [28, 28],
-        iconAnchor: [14, 14]
-      });
+      if (typeof teammateLat === 'number' && typeof teammateLng === 'number') {
+        const char = (member.user_name || 'U').charAt(0).toUpperCase();
+        const icon = L.divIcon({
+          html: `<div style="background-color: #EA580C; color: white; width: 28px; height: 28px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${char}</div>`,
+          className: '',
+          iconSize: [28, 28],
+          iconAnchor: [14, 14]
+        });
 
-      if (teammateMarkersRef.current[member.user_id]) {
-        teammateMarkersRef.current[member.user_id].setLatLng([lat, lng]);
-      } else {
-        teammateMarkersRef.current[member.user_id] = L.marker([lat, lng], { icon }).addTo(map).bindPopup(member.user_name);
+        if (teammateMarkersRef.current[member.user_id]) {
+          teammateMarkersRef.current[member.user_id].setLatLng([teammateLat, teammateLng]);
+        } else {
+          teammateMarkersRef.current[member.user_id] = L.marker([teammateLat, teammateLng], { icon }).addTo(map).bindPopup(member.user_name);
+        }
       }
     });
   }, [teamMembers, userId, isReviewMode]);
@@ -500,6 +613,10 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     setIsRecording(true);
     setHasStartedHike(true);
     timerRef.current = setInterval(() => setElapsedTime(prev => prev + 1), 1000);
+    
+    // Show toast notification
+    setToast({ message: 'Started recording your hike!', type: 'success' });
+    setTimeout(() => setToast(null), 3000);
   };
 
   const handleSendMessage = async (text?: string) => {
@@ -519,14 +636,14 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         setMessages(prev => [...prev, { id: thinkingId, sender: 'ai', text: '...', timestamp: new Date() }]);
 
         const responseText = await generateHikingAdvice(finalMsg, {
-          location: `${userPos[0].toFixed(4)}, ${userPos[1].toFixed(4)}`,
+          location: (userPos && typeof userPos[0] === 'number') ? `${userPos[0].toFixed(4)}, ${userPos[1].toFixed(4)}` : 'Unknown',
           route: activeRoute?.name || 'Unknown',
           teammates: teamMembers.map(m => m.user_name),
           routeInfo: activeRoute?.description,
           extraData: {
             nearby_reminders: reminderInfo.filter(r => {
-               const coords = parseGeographyPoint(r.coordinates);
-               return coords && getDistanceFromLatLonInM(userPos[0], userPos[1], coords[0], coords[1]) < 500;
+               const coords = getCoords(r);
+               return coords && activeRoute && activeRoute.coordinates && isPointNearRoute(coords[0], coords[1], activeRoute.coordinates || [], 500);
             }).map(r => ({ name: r.name, info: r.ai_prompt, category: r.category })),
             current_route: activeRoute ? {
               distance: activeRoute.distance,
@@ -591,8 +708,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         team_id: teamId,
         user_id: userId,
         content: noteContent,
-        latitude: userPos[0],
-        longitude: userPos[1],
+        latitude: userPos ? userPos[0] : 0,
+        longitude: userPos ? userPos[1] : 0,
         created_at: new Date().toISOString()
       });
 
@@ -685,26 +802,37 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
   return (
     <div className="flex flex-col h-full bg-gray-50 relative overflow-hidden">
+      {/* Toast Notification */}
+      {toast && (
+        <div className="absolute top-10 left-1/2 -translate-x-1/2 z-[3000] animate-fade-in-up">
+          <div className={`px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 backdrop-blur-md border ${
+            toast.type === 'success' ? 'bg-emerald-500/90 border-emerald-400 text-white' : 'bg-blue-500/90 border-blue-400 text-white'
+          }`}>
+            <Activity size={18} className="animate-pulse" />
+            <span className="text-sm font-bold tracking-wide uppercase">{toast.message}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Record Button (Bottom Left of Map) */}
+      {!activeRoute && !hasStartedHike && (
+        <button 
+          onClick={() => {
+            setTrackName(`Hike ${new Date().toLocaleDateString()}`);
+            handleStartRecording();
+          }}
+          className={`absolute ${mode === 'chat' ? 'bottom-[64%]' : 'bottom-[35%]'} left-4 z-[500] bg-hike-green text-white px-6 py-4 rounded-[24px] shadow-2xl active:scale-95 transition-all flex items-center gap-3 border-2 border-white/30 animate-fade-in`}
+        >
+          <Play size={20} fill="currentColor" />
+          <span className="text-sm font-black tracking-tight">DIRECT RECORD</span>
+        </button>
+      )}
+
       {/* Back Button */}
       {!hasStartedHike && onBack && (
         <button onClick={onBack} className="absolute top-6 left-4 z-[500] p-3 bg-white shadow-lg rounded-full border"><ArrowLeft size={20}/></button>
       )}
 
-      {/* SOS Overlay */}
-      {showSOS && (
-          <div className="absolute inset-0 z-[2000] bg-red-600/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-white text-center animate-fade-in">
-            <ShieldAlert size={64} className="mb-4 animate-bounce" />
-            <h2 className="text-4xl font-black mb-2">SOS ACTIVE</h2>
-            <div className="bg-white/20 p-6 rounded-2xl w-full mb-6 border backdrop-blur-md">
-                <div className="text-xs uppercase opacity-70 mb-1">Your Location</div>
-                <div className="font-mono text-2xl font-bold">{userPos[0].toFixed(5)} N, {userPos[1].toFixed(5)} E</div>
-            </div>
-            <div className="w-full space-y-3">
-                <a href="tel:999" className="block w-full bg-white text-red-600 py-4 rounded-xl font-bold text-xl flex items-center justify-center gap-2 shadow-lg"><Phone size={24} /> Call 999</a>
-                <button onClick={() => setShowSOS(false)} className="block w-full py-4 text-white/80 font-bold">Cancel</button>
-            </div>
-          </div>
-      )}
 
       {/* Save Dialog */}
       {showSaveDialog && (
@@ -719,9 +847,43 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                       <div className="flex-1 bg-gray-50 p-2 rounded"><div>Time</div><div className="font-bold">{formatTime(elapsedTime)}</div></div>
                       <div className="flex-1 bg-gray-50 p-2 rounded"><div>Dist</div><div className="font-bold">{(recordedPath.length * 0.005).toFixed(2)} km</div></div>
                   </div>
-                  <button onClick={() => { onSaveTrack({ id: Date.now().toString(), name: trackName, date: new Date(), duration: formatTime(elapsedTime), distance: (recordedPath.length * 0.005).toFixed(2) + 'km', difficulty: activeRoute?.difficulty || 0, coordinates: recordedPath, waypoints: waypoints }); setShowSaveDialog(false); if(onBack) onBack(); }} className="w-full bg-gray-800 text-white py-3 rounded-xl font-bold mb-3">Save to Profile</button>
-                  {isLeader && <button onClick={() => setShowUploadModal(true)} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">Share to Community</button>}
-                  <button onClick={() => setShowSaveDialog(false)} className="w-full text-gray-500 py-2 text-sm">Cancel</button>
+                  {!user.isGuest && (
+                    <>
+                      <button 
+                        onClick={() => { 
+                          onSaveTrack({ 
+                            id: Date.now().toString(), 
+                            name: trackName, 
+                            date: new Date(), 
+                            duration: formatTime(elapsedTime), 
+                            distance: (recordedPath.length * 0.005).toFixed(2) + 'km', 
+                            difficulty: activeRoute?.difficulty || 0, 
+                            coordinates: recordedPath, 
+                            waypoints: waypoints 
+                          }); 
+                          setShowSaveDialog(false); 
+                          if(onBack) onBack(); 
+                        }} 
+                        className="w-full bg-gray-800 text-white py-3 rounded-xl font-bold mb-3 shadow-lg active:scale-95 transition-all"
+                      >
+                        Save to Profile
+                      </button>
+                      <button 
+                        onClick={() => setShowUploadModal(true)} 
+                        className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold mb-3 shadow-lg active:scale-95 transition-all"
+                      >
+                        Share to Community
+                      </button>
+                    </>
+                  )}
+                  {user.isGuest && (
+                    <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 mb-6 text-center">
+                      <p className="text-xs text-amber-700 font-medium">Guest mode: Your track will be displayed once but not saved permanently. Sign up to keep your history!</p>
+                    </div>
+                  )}
+                  <button onClick={() => { if(user.isGuest && onBack) onBack(); setShowSaveDialog(false); }} className="w-full text-gray-500 py-2 text-sm">
+                    {user.isGuest ? 'Close' : 'Cancel'}
+                  </button>
               </div>
           </div>
       )}
@@ -738,7 +900,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
         {isReviewMode && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[500] bg-gray-900/90 text-white px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 backdrop-blur-md">
-            <History size={14} className="text-orange-400" /> REVIEW MODE
+            <HistoryIcon size={14} className="text-orange-400" /> REVIEW MODE
           </div>
         )}
 
@@ -748,6 +910,22 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
             <span className="opacity-70 uppercase tracking-tighter">Rec</span>
             <span className="font-mono">{formatTime(elapsedTime)}</span>
           </div>
+        )}
+
+        {/* SOS Overlay */}
+        {showSOS && (
+            <div className="absolute inset-0 z-[2000] bg-red-600/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-white text-center animate-fade-in">
+              <ShieldAlert size={64} className="mb-4 animate-bounce" />
+              <h2 className="text-4xl font-black mb-2">SOS ACTIVE</h2>
+              <div className="bg-white/20 p-6 rounded-2xl w-full mb-6 border backdrop-blur-md">
+                  <div className="text-xs uppercase opacity-70 mb-1">Your Location</div>
+                  <div className="font-mono text-2xl font-bold">{userPos && typeof userPos[0] === 'number' ? userPos[0].toFixed(5) : '0.00000'} N, {userPos && typeof userPos[1] === 'number' ? userPos[1].toFixed(5) : '0.00000'} E</div>
+              </div>
+              <div className="w-full space-y-3">
+                  <a href="tel:999" className="block w-full bg-white text-red-600 py-4 rounded-xl font-bold text-xl flex items-center justify-center gap-2 shadow-lg"><Phone size={24} /> Call 999</a>
+                  <button onClick={() => setShowSOS(false)} className="block w-full py-4 text-white/80 font-bold">Cancel</button>
+              </div>
+            </div>
         )}
 
         {/* Floating Draggable Summary Card (Start Hike + Highlights Merged) */}
@@ -799,12 +977,30 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                                if (data) canPassId = true;
                             }
 
+                            const snapshotCoords = (activeRoute.coordinates && activeRoute.coordinates.length > 0)
+                              ? activeRoute.coordinates
+                              : mergeSegmentCoordinates((activeRoute as any).segments || []);
+                            
+                            const targetRouteData = {
+                              id: activeRoute.id,
+                              name: activeRoute.name,
+                              region: activeRoute.region || 'Hong Kong',
+                              description: activeRoute.description || '',
+                              distance: activeRoute.distance,
+                              duration: activeRoute.duration,
+                              difficulty: activeRoute.difficulty,
+                              elevationGain: (activeRoute as any).elevationGain || 0,
+                              coordinates: snapshotCoords,
+                              segments: (activeRoute as any).segments || []
+                            };
+
                             const { error } = await supabase
                               .from('teams')
                               .update({ 
                                  status: 'confirmed', 
                                  target_route_id: canPassId ? activeRoute.id : null, 
-                                 target_route_name: activeRoute.name 
+                                 target_route_name: activeRoute.name,
+                                 target_route_data: targetRouteData
                               })
                               .eq('id', teamId); 
                             
@@ -834,13 +1030,23 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         )}
 
         {/* Side Controls */}
-        {hasStartedHike && !isReviewMode && (
-          <div className="absolute top-24 right-4 z-[400] flex flex-col gap-3">
-             <button onClick={() => setShowSOS(true)} className="bg-red-600 text-white p-4 rounded-full shadow-2xl font-black text-[11px] border-2 border-white/30">SOS</button>
-             {isLeader && <button onClick={() => setShowSaveDialog(true)} className="bg-blue-600 text-white p-3.5 rounded-full shadow-lg border border-white/30"><Upload size={20}/></button>}
-             <button onClick={() => setShowAddNote(true)} className="bg-white p-3.5 rounded-full shadow-lg text-orange-500 border border-white/30"><Star size={20}/></button>
-             <button onClick={() => { setIsRecording(false); setShowSaveDialog(true); }} className="bg-green-600 text-white p-3.5 rounded-full shadow-lg border border-white/30"><Check size={20}/></button>
-             <button onClick={() => { if(window.confirm('Quit?')) onBack && onBack(); }} className="bg-white p-3.5 rounded-full shadow-lg text-gray-500 border border-white/30"><X size={20}/></button>
+        {!isReviewMode && (
+          <div className={`absolute right-4 z-[400] flex flex-col origin-top-right ${mode === 'chat' ? 'top-4 gap-2 scale-90' : 'top-24 gap-3'}`}>
+             <button onClick={() => setShowSOS(true)} className={`bg-red-600 text-white rounded-full shadow-2xl font-black border-2 border-white/30 ${mode === 'chat' ? 'p-3 text-[10px]' : 'p-4 text-[11px]'}`}>SOS</button>
+             {isLeader && <button onClick={() => setShowSaveDialog(true)} className={`bg-blue-600 text-white rounded-full shadow-lg border border-white/30 ${mode === 'chat' ? 'p-3' : 'p-3.5'}`}><Upload size={mode === 'chat' ? 18 : 20}/></button>}
+             <button onClick={() => setShowAddNote(true)} className={`bg-white rounded-full shadow-lg text-orange-500 border border-white/30 ${mode === 'chat' ? 'p-3' : 'p-3.5'}`}><Star size={mode === 'chat' ? 18 : 20}/></button>
+             <button
+               onClick={() => {
+                 if (!hasStartedHike) return;
+                 setIsRecording(false);
+                 setShowSaveDialog(true);
+               }}
+               className={`${mode === 'chat' ? 'p-3' : 'p-3.5'} rounded-full shadow-lg border border-white/30 ${hasStartedHike ? 'bg-green-600 text-white' : 'bg-green-200 text-white/70 cursor-not-allowed'}`}
+               disabled={!hasStartedHike}
+             >
+               <Check size={mode === 'chat' ? 18 : 20}/>
+             </button>
+             <button onClick={() => { if(window.confirm('Quit?')) onBack && onBack(); }} className={`bg-white rounded-full shadow-lg text-gray-500 border border-white/30 ${mode === 'chat' ? 'p-3' : 'p-3.5'}`}><X size={mode === 'chat' ? 18 : 20}/></button>
           </div>
         )}
         

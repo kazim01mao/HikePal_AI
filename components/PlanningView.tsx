@@ -10,15 +10,19 @@ import {
   saveGeneratedRoutesForUser,
   fetchUploadedRoutes,
   fetchAllRoutesFromDB,
+  fetchEvents,
+  HikingEvent,
 } from '../services/segmentRoutingService';
 import { recommendRoutesForGroup, MemberPreference, type GroupRouteResult, getMemberPreferenceDetails } from '../services/groupRouteService';
 import { fetchTeamMembers, fetchTeamProgress, subscribeToTeamProgress, type TeamProgress, type TeamMember } from '../services/teamMemberService';
 import TeamDetailsView from './TeamDetailsView';
+import EventDetailsView from './EventDetailsView';
 import PreferenceFormPanel, { PreferenceFormData } from './PreferenceFormPanel';
 import React, { useState, useEffect, useRef } from 'react';
-import { Route, HikingEvent, GroupHike, Track } from '../types';
+import { Route, GroupHike, Track } from '../types';
 import {
   MapPin,
+  Map,
   Download,
   Info,
   MessageSquare,
@@ -39,6 +43,8 @@ import {
   Clock, 
   QrCode,
   Check,
+  History as HistoryIcon,
+  X,
 } from 'lucide-react';
 import { supabase } from '../utils/supabaseClient';
 import { 
@@ -65,11 +71,7 @@ interface PlanningViewProps {
   initialTeamId?: string; // 🆕 用于直接打开队伍详情
 }
 
-const MOCK_EVENTS: HikingEvent[] = [
-    { id: 'e1', title: 'Dragon\'s Back Trash Cleanup', type: 'cleanup', date: 'Sat, 12 Oct', location: 'Shek O', participants: 45, imageUrl: 'https://picsum.photos/400/200?random=10' },
-    { id: 'e2', title: 'Obstacle Clearing: Lantau Trail', type: 'maintenance', date: 'Sun, 13 Oct', location: 'Lantau', participants: 12, imageUrl: 'https://picsum.photos/400/200?random=11' },
-    { id: 'e3', title: 'Trail Ribbon Placement Guide', type: 'guide', date: 'Sat, 19 Oct', location: 'Sai Kung', participants: 28, imageUrl: 'https://picsum.photos/400/200?random=12' },
-];
+// Events will now be fetched from Supabase via fetchEvents
 
 const MOCK_NEARBY_GROUPS: GroupHike[] = [
   {
@@ -242,7 +244,8 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 }) => {
   const [selectedCity] = useState('Hong Kong');
   const [activeRouteId, setActiveRouteId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'routes' | 'start_hiking' | 'events'>('routes');
+  const [selectedEvent, setSelectedEvent] = useState<HikingEvent | null>(null);
+  const [viewMode, setViewMode] = useState<'routes' | 'start_hiking' | 'events' | 'event_detail'>('routes');
   const [routeSearchQuery, setRouteSearchQuery] = useState('');
   // Use state for official routes to support DB loading
   const [officialRoutes, setOfficialRoutes] = useState<Route[]>([]); // 🆕 初始为空
@@ -252,6 +255,8 @@ const PlanningView: React.FC<PlanningViewProps> = ({
   // Add state for uploaded routes
   const [uploadedRoutes, setUploadedRoutes] = useState<Route[]>([]);
   const [showCommunityRoutes, setShowCommunityRoutes] = useState(false);
+  const [dbEvents, setDbEvents] = useState<HikingEvent[]>([]);
+  const [isLoadingEvents, setIsLoadingEvents] = useState(false);
 
   useEffect(() => {
     if (initialTeamId) {
@@ -278,6 +283,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
             };
             
             setCreatedGroup(groupObj);
+            setShowCreateGroupForm(false);
             setShowTeamDetailsView(true);
             setStartSelection('group');
             setViewMode('start_hiking');
@@ -293,32 +299,53 @@ const PlanningView: React.FC<PlanningViewProps> = ({
     }
   }, [initialTeamId, currentUserId]);
 
+  const fetchCommunityRoutes = async () => {
+    const routes = await fetchUploadedRoutes();
+    if (routes && routes.length > 0) {
+      // Convert ComposedRoute to Route
+      const mappedRoutes: Route[] = routes.map(r => ({
+        id: r.id,
+        name: r.name,
+        region: r.region || 'Unknown',
+        distance: r.total_distance ? `${Number(r.total_distance).toFixed(1)}km` : '0km',
+        duration: r.total_duration_minutes ? `${Math.round(r.total_duration_minutes/60)}h` : '0h',
+        difficulty: r.difficulty_level || 3,
+        description: r.description || '',
+        startPoint: '',
+        endPoint: '',
+        elevationGain: r.total_elevation_gain || 0,
+        imageUrl: r.imageUrl,
+        isUserPublished: true,
+        coordinates: r.full_coordinates,
+        waypoints: (r as any).waypoints || [] // Pass waypoints directly
+      } as any));
+      setUploadedRoutes(mappedRoutes);
+    } else {
+      setUploadedRoutes([]);
+    }
+  };
+
   useEffect(() => {
-    const fetchCommunity = async () => {
-        const routes = await fetchUploadedRoutes();
-        if(routes && routes.length > 0) {
-            // Convert ComposedRoute to Route
-            const mappedRoutes: Route[] = routes.map(r => ({
-                id: r.id,
-                name: r.name,
-                region: r.region || 'Unknown',
-                distance: r.total_distance ? `${Number(r.total_distance).toFixed(1)}km` : '0km',
-                duration: r.total_duration_minutes ? `${Math.round(r.total_duration_minutes/60)}h` : '0h',
-                difficulty: r.difficulty_level || 3,
-                description: r.description || '',
-                startPoint: '',
-                endPoint: '',
-                elevationGain: r.total_elevation_gain || 0,
-                imageUrl: r.imageUrl,
-                isUserPublished: true,
-                coordinates: r.full_coordinates,
-                waypoints: (r as any).waypoints || [] // Pass waypoints directly
-            } as any));
-            setUploadedRoutes(mappedRoutes);
-        }
+    fetchCommunityRoutes();
+    const loadEvents = async () => {
+       setIsLoadingEvents(true);
+       try {
+          const evts = await fetchEvents();
+          setDbEvents(evts);
+       } catch (e) {
+          console.error("Error loading events", e);
+       } finally {
+          setIsLoadingEvents(false);
+       }
     };
-    fetchCommunity();
+    loadEvents();
   }, []);
+
+  useEffect(() => {
+    if (showCommunityRoutes) {
+      fetchCommunityRoutes();
+    }
+  }, [showCommunityRoutes]);
 
   // Fetch official trails from backend
   useEffect(() => {
@@ -472,6 +499,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
     maxDistance: 0, // 🆕 无默认选项
   });
   const [showOrganizerPreferenceForm, setShowOrganizerPreferenceForm] = useState(false);
+  const [showRouteInfoModal, setShowRouteInfoModal] = useState(false);
 
   const detailMapRef = useRef<HTMLDivElement>(null);
   const detailMapInstanceRef = useRef<any>(null);
@@ -484,28 +512,21 @@ const PlanningView: React.FC<PlanningViewProps> = ({
     const loadMetadata = async () => {
       console.log('DEBUG: Fetching reminder_info...');
       
-      // Try fetching using a direct select with PostGIS transformation
-      // Note: Supabase/PostgREST doesn't directly support st_asgeojson in select strings 
-      // without custom configuration. Since RPC failed, we will attempt another approach:
-      // Fetching and then deciding if we need to parse.
-      
-      const { data: reminders, error } = await supabase
-        .from('reminder_info')
-        .select(`
-          id,
-          name,
-          category,
-          type,
-          ai_prompt,
-          risk_level,
-          coordinates
-        `);
+      // Attempt to use RPC first for proper GeoJSON conversion
+      const { data, error } = await supabase.rpc('get_reminder_with_coords');
 
       if (error) {
-        console.error('DEBUG: Error fetching reminders:', error);
-      } else if (reminders) {
-        console.log('DEBUG: Reminders loaded:', reminders.length);
-        setReminderInfo(reminders);
+        console.error('DEBUG: RPC error, falling back to direct query:', error);
+        const { data: reminders, error: tableError } = await supabase
+          .from('reminder_info')
+          .select(`id, name, category, type, ai_prompt, risk_level, coordinates`);
+
+        if (!tableError && reminders) {
+          setReminderInfo(reminders);
+        }
+      } else if (data) {
+        console.log('DEBUG: Reminders loaded via RPC:', data.length);
+        setReminderInfo(data);
       }
     };
     loadMetadata();
@@ -515,6 +536,11 @@ const PlanningView: React.FC<PlanningViewProps> = ({
   useEffect(() => {
     const map = detailMapInstanceRef.current;
     const L = (window as any).L;
+    
+    // 🚀 NEW: Ensure user progress markers are NOT shown in preview mode
+    // We do this by filtering out any markers that might represent "people" or "progress"
+    // and only keeping facility/risk markers.
+    
     if (!map || !L || reminderInfo.length === 0) return;
 
     // Clear existing reminder markers from the preview map
@@ -567,31 +593,45 @@ const PlanningView: React.FC<PlanningViewProps> = ({
       if (coords) {
         console.log(`DEBUG: Adding marker for ${r.name} at ${coords}`);
         const isRisk = r.category?.toLowerCase() === 'risk';
-        const bgColor = isRisk ? '#EF4444' : '#3B82F6'; 
-        const emoji = isRisk ? '⚠️' : 'ℹ️'; 
+        const isCulture = r.category?.toLowerCase().includes('culture');
+        const bgColor = isRisk ? '#EF4444' : isCulture ? '#D97706' : '#3B82F6';
+        const emoji = isRisk ? '⚠️' : isCulture ? '🏛️' : 'ℹ️'; 
         
         let specificEmoji = emoji;
         const nameLower = r.name?.toLowerCase() || '';
+        const typeLower = r.type?.toLowerCase() || '';
         const promptLower = r.ai_prompt?.toLowerCase() || '';
-        
+        const combinedText = `${nameLower} ${typeLower} ${promptLower}`;
+
         if (!isRisk) {
-           if (nameLower.includes('toilet') || nameLower.includes('restroom')) specificEmoji = '🚻';
-           else if (nameLower.includes('water')) specificEmoji = '💧';
-           else if (nameLower.includes('rest') || nameLower.includes('pavilion')) specificEmoji = '🪑';
-           else if (nameLower.includes('camp')) specificEmoji = '⛺';
+           if (combinedText.includes('toilet') || combinedText.includes('restroom')) specificEmoji = '🚻';
+           else if (combinedText.includes('water')) specificEmoji = '💧';
+           else if (combinedText.includes('rest') || combinedText.includes('pavilion') || combinedText.includes('bench')) specificEmoji = '🪑';
+           else if (combinedText.includes('camp')) specificEmoji = '⛺';
+           else if (combinedText.includes('view') || combinedText.includes('scenic') || combinedText.includes('photo')) specificEmoji = '📸';
+           else if (combinedText.includes('exit') || combinedText.includes('bail')) specificEmoji = '🚪';
+           else if (combinedText.includes('bus') || combinedText.includes('transport')) specificEmoji = '🚌';
+           else if (combinedText.includes('food') || combinedText.includes('restaurant')) specificEmoji = '🍜';
+           else if (combinedText.includes('beach')) specificEmoji = '🏖️';
+           else if (combinedText.includes('stone') || combinedText.includes('monument') || combinedText.includes('history') || combinedText.includes('boundary')) specificEmoji = '🗿';
+           else if (r.category?.toLowerCase().includes('culture')) specificEmoji = '🏛️';
         } else {
-           if (nameLower.includes('slip') || promptLower.includes('slip')) specificEmoji = '🥾';
-           else if (nameLower.includes('animal') || nameLower.includes('dog') || nameLower.includes('monkey')) specificEmoji = '🐕';
-           else if (nameLower.includes('steep') || nameLower.includes('cliff')) specificEmoji = '⛰️';
-           else if (nameLower.includes('sun') || nameLower.includes('heat')) specificEmoji = '☀️';
+           if (combinedText.includes('slip')) specificEmoji = '🥾';
+           else if (combinedText.includes('animal') || combinedText.includes('dog') || combinedText.includes('monkey') || combinedText.includes('boar')) specificEmoji = '🐗';
+           else if (combinedText.includes('steep') || combinedText.includes('cliff') || combinedText.includes('slope')) specificEmoji = '⛰️';
+           else if (combinedText.includes('sun') || combinedText.includes('heat')) specificEmoji = '☀️';
+           else if (combinedText.includes('snake')) specificEmoji = '🐍';
+           else if (combinedText.includes('bee') || combinedText.includes('insect')) specificEmoji = '🐝';
+           else if (combinedText.includes('river') || combinedText.includes('stream')) specificEmoji = '🌊';
+           else if (combinedText.includes('mud')) specificEmoji = '👢';
         }
 
         const remIcon = L.divIcon({ 
-          html: `<div style="background-color: ${bgColor}; color: white; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-size: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); z-index: 500;">${specificEmoji}</div>`,
+          html: `<div style="background-color: ${bgColor}; color: white; width: 28px; height: 28px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-size: 14px; box-shadow: 0 3px 6px rgba(0,0,0,0.4); z-index: 500;">${specificEmoji}</div>`,
           className: '',
-          iconSize: [24, 24],
-          iconAnchor: [12, 12],
-          popupAnchor: [0, -12]
+          iconSize: [28, 28],
+          iconAnchor: [14, 14],
+          popupAnchor: [0, -14]
         });
 
         const popupContent = `
@@ -675,11 +715,22 @@ const PlanningView: React.FC<PlanningViewProps> = ({
   useEffect(() => {
     const anyWindow = window as any;
     const L = anyWindow.L;
-    if (!detailMapRef.current || !L || !activeRoute) return;
+    if (!detailMapRef.current || !L || !activeRoute) {
+      if (detailMapInstanceRef.current) {
+        detailMapInstanceRef.current.remove();
+        detailMapInstanceRef.current = null;
+      }
+      return;
+    }
 
     if (detailMapInstanceRef.current) {
         detailMapInstanceRef.current.remove();
         detailMapInstanceRef.current = null;
+    }
+    if (detailMapRef.current) {
+      const container = detailMapRef.current;
+      (container as any)._leaflet_id = null;
+      container.innerHTML = '';
     }
 
     const map = L.map(detailMapRef.current, {
@@ -692,11 +743,36 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png').addTo(map);
 
+    const normalizePoint = (p: any): [number, number] | null => {
+      if (Array.isArray(p) && p.length >= 2) {
+        const [a, b] = p;
+        if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b)) {
+          return [a, b];
+        }
+      }
+      if (p && typeof p === 'object' && typeof p.lat === 'number' && typeof p.lng === 'number') {
+        if (Number.isFinite(p.lat) && Number.isFinite(p.lng)) {
+          return [p.lat, p.lng];
+        }
+      }
+      return null;
+    };
+
+    const sanitizeCoords = (raw: any): [number, number][] => {
+      if (!Array.isArray(raw)) return [];
+      const cleaned: [number, number][] = [];
+      raw.forEach((pt) => {
+        const norm = normalizePoint(pt);
+        if (norm) cleaned.push(norm);
+      });
+      return cleaned;
+    };
+
     let coords: [number, number][] = [];
     
     // First try to use the route's own coordinates if it has them (important for AI routes)
     if (activeRoute.coordinates && Array.isArray(activeRoute.coordinates) && activeRoute.coordinates.length > 0) {
-      coords = activeRoute.coordinates;
+      coords = sanitizeCoords(activeRoute.coordinates);
     } 
     // Fallback to mock coordinates for legacy/mock routes
     else if (activeRoute.id === 'hk8') {
@@ -717,7 +793,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
         coords = SECTION_6_COORDINATES;
     }
 
-    if (coords.length > 0) {
+    if (coords && coords.length > 0) {
         // Create a single polyline representing the whole trail with all coordinates
         const fullPolyline = L.polyline(coords, { 
             color: '#2E7D32', 
@@ -734,8 +810,9 @@ const PlanningView: React.FC<PlanningViewProps> = ({
             const colors = ['#2E7D32', '#1976D2', '#D32F2F', '#FBC02D', '#7B1FA2', '#0097A7'];
             
             routeData.segments.forEach((seg: any, i: number) => {
-                if (seg.coordinates && seg.coordinates.length > 0) {
-                    L.polyline(seg.coordinates, {
+                const segCoords = sanitizeCoords(seg.coordinates);
+                if (segCoords.length > 0) {
+                    L.polyline(segCoords, {
                         color: colors[i % colors.length],
                         weight: 6,
                         opacity: 0.9,
@@ -745,8 +822,8 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                     }).addTo(map);
                     
                     // Add segment label marker at middle point
-                    const midIdx = Math.floor(seg.coordinates.length / 2);
-                    const midPos = seg.coordinates[midIdx];
+                    const midIdx = Math.floor(segCoords.length / 2);
+                    const midPos = segCoords[midIdx];
                     
                     const labelIcon = L.divIcon({
                         className: 'seg-label',
@@ -760,14 +837,27 @@ const PlanningView: React.FC<PlanningViewProps> = ({
         }
 
         // Add start and end markers
-        L.circleMarker(coords[0], { radius: 6, color: '#4CAF50', fillColor: '#fff', fillOpacity: 1, weight: 2 }).addTo(map).bindPopup('Start');
-        L.circleMarker(coords[coords.length - 1], { radius: 6, color: '#F44336', fillColor: '#fff', fillOpacity: 1, weight: 2 }).addTo(map).bindPopup('End');
+        const startIcon = L.divIcon({
+            className: 'start-marker-icon',
+            html: `<div style="background-color: #2E7D32; color: white; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">S</div>`,
+            iconSize: [20, 20],
+            iconAnchor: [10, 10]
+        });
+        const endIcon = L.divIcon({
+            className: 'end-marker-icon',
+            html: `<div style="background-color: #D32F2F; color: white; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">E</div>`,
+            iconSize: [20, 20],
+            iconAnchor: [10, 10]
+        });
+
+        L.marker(coords[0], { icon: startIcon, zIndexOffset: 1000 }).addTo(map).bindPopup('Start Point');
+        L.marker(coords[coords.length - 1], { icon: endIcon, zIndexOffset: 1000 }).addTo(map).bindPopup('End Point');
 
         // Render waypoints if present (Community Routes)
         const waypoints = (activeRoute as any).waypoints;
         if (waypoints && Array.isArray(waypoints)) {
             waypoints.forEach((wp: any) => {
-                if (wp.lat && wp.lng) {
+                if (wp && typeof wp.lat === 'number' && typeof wp.lng === 'number') {
                     const icon = L.divIcon({
                         className: 'waypoint-icon',
                         html: `<div style="background-color: ${wp.type === 'photo' ? '#3B82F6' : '#EF4444'}; width: 14px; height: 14px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>`,
@@ -808,31 +898,45 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                 const coords = parseGeoPoint(r);
                 if (coords) {
                     const isRisk = r.category?.toLowerCase() === 'risk';
-                    const bgColor = isRisk ? '#EF4444' : '#3B82F6'; 
-                    const emoji = isRisk ? '⚠️' : 'ℹ️'; 
+                    const isCulture = r.category?.toLowerCase().includes('culture');
+                    const bgColor = isRisk ? '#EF4444' : isCulture ? '#D97706' : '#3B82F6';
+                    const emoji = isRisk ? '⚠️' : isCulture ? '🏛️' : 'ℹ️'; 
                     
                     let specificEmoji = emoji;
                     const nameLower = r.name?.toLowerCase() || '';
+                    const typeLower = r.type?.toLowerCase() || '';
                     const promptLower = r.ai_prompt?.toLowerCase() || '';
+                    const combinedText = `${nameLower} ${typeLower} ${promptLower}`;
                     
                     if (!isRisk) {
-                        if (nameLower.includes('toilet') || nameLower.includes('restroom')) specificEmoji = '🚻';
-                        else if (nameLower.includes('water')) specificEmoji = '💧';
-                        else if (nameLower.includes('rest') || nameLower.includes('pavilion')) specificEmoji = '🪑';
-                        else if (nameLower.includes('camp')) specificEmoji = '⛺';
+                        if (combinedText.includes('toilet') || combinedText.includes('restroom')) specificEmoji = '🚻';
+                        else if (combinedText.includes('water')) specificEmoji = '💧';
+                        else if (combinedText.includes('rest') || combinedText.includes('pavilion') || combinedText.includes('bench')) specificEmoji = '🪑';
+                        else if (combinedText.includes('camp')) specificEmoji = '⛺';
+                        else if (combinedText.includes('view') || combinedText.includes('scenic') || combinedText.includes('photo')) specificEmoji = '📸';
+                        else if (combinedText.includes('exit') || combinedText.includes('bail')) specificEmoji = '🚪';
+                        else if (combinedText.includes('bus') || combinedText.includes('transport')) specificEmoji = '🚌';
+                        else if (combinedText.includes('food') || combinedText.includes('restaurant')) specificEmoji = '🍜';
+                        else if (combinedText.includes('beach')) specificEmoji = '🏖️';
+                        else if (combinedText.includes('stone') || combinedText.includes('monument') || combinedText.includes('history') || combinedText.includes('boundary')) specificEmoji = '🗿';
+                        else if (r.category?.toLowerCase().includes('culture')) specificEmoji = '🏛️';
                     } else {
-                        if (nameLower.includes('slip') || promptLower.includes('slip')) specificEmoji = '🥾';
-                        else if (nameLower.includes('animal') || nameLower.includes('dog') || nameLower.includes('monkey')) specificEmoji = '🐕';
-                        else if (nameLower.includes('steep') || nameLower.includes('cliff')) specificEmoji = '⛰️';
-                        else if (nameLower.includes('sun') || nameLower.includes('heat')) specificEmoji = '☀️';
+                        if (combinedText.includes('slip')) specificEmoji = '🥾';
+                        else if (combinedText.includes('animal') || combinedText.includes('dog') || combinedText.includes('monkey') || combinedText.includes('boar')) specificEmoji = '🐗';
+                        else if (combinedText.includes('steep') || combinedText.includes('cliff') || combinedText.includes('slope')) specificEmoji = '⛰️';
+                        else if (combinedText.includes('sun') || combinedText.includes('heat')) specificEmoji = '☀️';
+                        else if (combinedText.includes('snake')) specificEmoji = '🐍';
+                        else if (combinedText.includes('bee') || combinedText.includes('insect')) specificEmoji = '🐝';
+                        else if (combinedText.includes('river') || combinedText.includes('stream')) specificEmoji = '🌊';
+                        else if (combinedText.includes('mud')) specificEmoji = '👢';
                     }
 
                     const remIcon = L.divIcon({ 
-                        html: `<div style="background-color: ${bgColor}; color: white; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-size: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); z-index: 500;">${specificEmoji}</div>`,
+                        html: `<div style="background-color: ${bgColor}; color: white; width: 28px; height: 28px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-size: 14px; box-shadow: 0 3px 6px rgba(0,0,0,0.4); z-index: 500;">${specificEmoji}</div>`,
                         className: '',
-                        iconSize: [24, 24],
-                        iconAnchor: [12, 12],
-                        popupAnchor: [0, -12]
+                        iconSize: [28, 28],
+                        iconAnchor: [14, 14],
+                        popupAnchor: [0, -14]
                     });
 
                     const popupContent = `
@@ -875,15 +979,19 @@ const PlanningView: React.FC<PlanningViewProps> = ({
         if (map) {
             map.invalidateSize();
             if (coords.length > 0) {
-                map.fitBounds(L.polyline(coords).getBounds(), { padding: [20, 20] });
+                map.fitBounds(L.polyline(coords).getBounds(), { padding: [40, 40] });
             }
         }
-    }, 100);
+    }, 400);
 
     return () => {
         if (detailMapInstanceRef.current) {
             detailMapInstanceRef.current.remove();
             detailMapInstanceRef.current = null;
+        }
+        if (detailMapRef.current) {
+          (detailMapRef.current as any)._leaflet_id = null;
+          detailMapRef.current.innerHTML = '';
         }
     };
   }, [activeRoute]);
@@ -1250,7 +1358,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
             elevationGain: routeData?.total_elevation_gain || existingRoute?.elevationGain || 0,
             isUserPublished: existingRoute?.isUserPublished || false,
             coordinates: finalCoordinates,
-            segments: routeData?.segments || [], // 🆕 Pass segments for mapping
+            segments: routeData?.segments || (existingRoute as any)?.segments || [], // 🆕 Pass segments for mapping
           } as any;
       }
 
@@ -1299,7 +1407,68 @@ const PlanningView: React.FC<PlanningViewProps> = ({
     }
   };
 
+  const startRouteFromSnapshot = (snapshot: any, forceIsLeader?: boolean) => {
+    if (!snapshot) return;
+    let coords: [number, number][] = Array.isArray(snapshot.coordinates) ? snapshot.coordinates : [];
+    if (coords.length === 0 && Array.isArray(snapshot.segments)) {
+      coords = mergeSegmentCoordinates(snapshot.segments);
+    }
+    if (coords.length === 0) {
+      coords = DRAGONS_BACK_COORDINATES;
+    }
+
+    const distance =
+      typeof snapshot.distance === 'string'
+        ? snapshot.distance
+        : `${Number(snapshot.distance || 0).toFixed(1)}km`;
+    const duration =
+      typeof snapshot.duration === 'string'
+        ? snapshot.duration
+        : `${Math.round(Number(snapshot.duration || 0) / 60) || 0}h`;
+
+    const selectedRoute: Route = {
+      id: snapshot.id || `team_route_${Date.now()}`,
+      name: snapshot.name || 'Team Hike',
+      region: snapshot.region || 'Hong Kong',
+      description: snapshot.description || '',
+      distance,
+      duration,
+      difficulty: snapshot.difficulty || 3,
+      startPoint: '{}',
+      endPoint: '{}',
+      elevationGain: snapshot.elevationGain || 0,
+      isUserPublished: snapshot.isUserPublished || false,
+      coordinates: coords,
+      segments: snapshot.segments || []
+    } as any;
+
+    const finalTeamId = createdGroup ? createdGroup.id : initialTeamId;
+    const finalIsLeader = forceIsLeader !== undefined ? forceIsLeader : isLeader;
+
+    onSelectRoute?.({
+      ...selectedRoute,
+      isLeader: finalIsLeader,
+      teamId: finalTeamId
+    } as any);
+  };
+
   // --- Sub-View: Events ---
+  // --- Sub-View: Event Detail ---
+  if (viewMode === 'event_detail' && selectedEvent) {
+    return (
+      <EventDetailsView 
+        event={selectedEvent} 
+        onBack={() => setViewMode('events')}
+        onStartActivity={(route) => {
+          // If the event has route data, start it
+          if (route) {
+            onSelectRoute(route);
+          }
+        }}
+      />
+    );
+  }
+
   if (viewMode === 'events') {
       return (
           <div className="flex flex-col h-full bg-gray-50 animate-fade-in">
@@ -1316,33 +1485,56 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                       </div>
                   </div>
 
-                  {MOCK_EVENTS.map(evt => (
-                      <div key={evt.id} className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
-                          <div className="h-32 w-full relative">
-                              <img src={evt.imageUrl} className="w-full h-full object-cover" alt={evt.title} />
-                              <div className="absolute top-2 right-2 bg-white/90 px-2 py-1 rounded-full text-xs font-bold text-gray-700">
-                                  {evt.type.toUpperCase()}
-                              </div>
-                          </div>
-                          <div className="p-4">
-                              <h3 className="font-bold text-lg mb-1">{evt.title}</h3>
-                              <div className="flex items-center gap-2 text-gray-500 text-sm mb-3">
-                                  <Calendar size={14} /> {evt.date}
-                                  <span className="mx-1">•</span>
-                                  <MapPin size={14} /> {evt.location}
-                              </div>
-                              <div className="flex items-center justify-between">
-                                  <div className="flex -space-x-2">
-                                      {[1,2,3].map(i => (
-                                          <div key={i} className="w-6 h-6 rounded-full border-2 border-white bg-gray-300"></div>
-                                      ))}
-                                      <div className="w-6 h-6 rounded-full border-2 border-white bg-gray-100 flex items-center justify-center text-[8px] font-bold">+{evt.participants}</div>
-                                  </div>
-                                  <button className="bg-hike-green text-white px-4 py-1.5 rounded-full text-sm font-bold shadow hover:bg-hike-dark">Join</button>
-                              </div>
-                          </div>
+                  {isLoadingEvents ? (
+                      <div className="flex flex-col items-center justify-center py-10 space-y-4">
+                         <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                         <p className="text-gray-400 font-medium">Loading events...</p>
                       </div>
-                  ))}
+                  ) : dbEvents.length === 0 ? (
+                      <div className="text-center py-10 bg-white rounded-xl border border-gray-100">
+                         <Calendar className="w-12 h-12 text-gray-300 mx-auto mb-2" />
+                         <p className="text-gray-500 font-medium">No events found.</p>
+                      </div>
+                  ) : (
+                      dbEvents.map(evt => (
+                          <div key={evt.id} className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100 cursor-pointer hover:shadow-md transition active:scale-[0.98]" onClick={() => {
+                              setSelectedEvent(evt);
+                              setViewMode('event_detail');
+                          }}>
+                              <div className="h-32 w-full relative">
+                                  <img src={evt.imageUrl} className="w-full h-full object-cover" alt={evt.title} />
+                                  <div className="absolute top-2 right-2 bg-white/90 px-2 py-1 rounded-full text-xs font-bold text-gray-700">
+                                      {evt.type.toUpperCase()}
+                                  </div>
+                              </div>
+                              <div className="p-4">
+                                  <h3 className="font-bold text-lg mb-1">{evt.title}</h3>
+                                  <div className="flex items-center gap-2 text-gray-500 text-sm mb-3">
+                                      <Calendar size={14} /> {evt.event_date ? new Date(evt.event_date).toLocaleDateString() : evt.date}
+                                      {evt.time && (
+                                        <>
+                                          <span className="mx-1">•</span>
+                                          <Clock size={14} /> {evt.time}
+                                        </>
+                                      )}
+                                      <span className="mx-1">•</span>
+                                      <MapPin size={14} /> {evt.location}
+                                  </div>
+                                  <div className="flex items-center justify-between">
+                                      <div className="flex -space-x-2 invisible">
+                                          {[1,2,3].map(i => (
+                                              <div key={i} className="w-6 h-6 rounded-full border-2 border-white bg-gray-300"></div>
+                                          ))}
+                                          <div className="w-6 h-6 rounded-full border-2 border-white bg-gray-100 flex items-center justify-center text-[8px] font-bold">+{evt.participants}</div>
+                                      </div>
+                                      <button className="bg-hike-green text-white px-4 py-1.5 rounded-full text-sm font-bold shadow hover:bg-hike-dark flex gap-1 items-center">
+                                          {evt.routeData ? <Map size={14} /> : null} Join
+                                      </button>
+                                  </div>
+                              </div>
+                          </div>
+                      ))
+                  )}
               </div>
           </div>
       )
@@ -1557,23 +1749,95 @@ const PlanningView: React.FC<PlanningViewProps> = ({
             <div className={`transition-all duration-300 opacity-100 space-y-5 animate-fade-in`}>
               {/* Quick Search by Team ID */}
               <div className="bg-white/80 backdrop-blur-xl p-5 rounded-2xl shadow-sm border border-white/50">
-                <label className="text-xs text-gray-600 font-bold uppercase tracking-wider block mb-3">Have a Team ID?</label>
+                <label className="text-xs text-gray-600 font-bold uppercase tracking-wider block mb-3">Have a team link?</label>
                 <div className="flex gap-2">
-                  <input 
-                    value={teamIdInput} 
-                    onChange={e => setTeamIdInput(e.target.value)} 
-                    placeholder="Enter Team ID..." 
-                    className="flex-1 border-2 border-gray-200 py-3 px-3 rounded-xl focus:outline-none focus:border-blue-500 bg-gray-50/50 focus:bg-white transition-colors" 
+                  <input
+                    value={teamIdInput}
+                    onChange={e => setTeamIdInput(e.target.value)}
+                    placeholder="Paste group link here..."
+                    className="flex-1 border-2 border-gray-200 py-3 px-3 rounded-xl focus:outline-none focus:border-blue-500 bg-gray-50/50 focus:bg-white transition-colors"
                   />
-                  <button 
-                    className="px-4 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl text-sm font-bold hover:shadow-md active:scale-95 transition-all duration-200 shadow-sm" 
-                    onClick={() => {
-                      const found = MOCK_NEARBY_GROUPS.find(g => g.id === teamIdInput);
-                      if (found) setSelectedGroup(found);
-                      else alert('Team not found');
+                  <button
+                    className="px-4 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl text-sm font-bold hover:shadow-md active:scale-95 transition-all duration-200 shadow-sm"
+                    onClick={async () => {
+                      try {
+                        const trimmed = teamIdInput.trim();
+                        if (!trimmed) {
+                          alert('Please paste a team link or ID.');
+                          return;
+                        }
+
+                        const uuidRegex =
+                          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+                        let teamId = '';
+                        try {
+                          if (trimmed.startsWith('http')) {
+                            const url = new URL(trimmed);
+                            teamId = url.searchParams.get('team') || '';
+                          } else if (uuidRegex.test(trimmed)) {
+                            teamId = trimmed;
+                          }
+                        } catch {
+                          if (uuidRegex.test(trimmed)) {
+                            teamId = trimmed;
+                          }
+                        }
+
+                        if (!teamId || !uuidRegex.test(teamId)) {
+                          alert('Invalid link or team ID');
+                          return;
+                        }
+
+                        const { error } = await supabase.from('team_members').upsert(
+                          { team_id: teamId, user_id: currentUserId },
+                          { onConflict: 'team_id,user_id' }
+                        );
+                        if (error) throw error;
+                        
+                        const { data: teamData } = await supabase
+                          .from('teams')
+                          .select('*')
+                          .eq('id', teamId)
+                          .single();
+
+                        if (!teamData) {
+                          alert('Joined, but failed to load team details.');
+                          setTeamIdInput('');
+                          return;
+                        }
+
+                        const isCaptain = teamData.created_by === currentUserId;
+                        const groupObj: GroupHike = {
+                          id: teamData.id,
+                          title: teamData.name,
+                          description: teamData.description,
+                          date: 'To be decided',
+                          maxMembers: teamData.max_team_size,
+                          currentMembers: teamData.team_size,
+                          isOrganizer: isCaptain,
+                          members: [],
+                          status: teamData.status,
+                          routeId: teamData.target_route_id
+                        };
+
+                        setCreatedGroup(groupObj);
+                        setIsLeader(isCaptain);
+                        setShowTeamDetailsView(true);
+                        setStartSelection('group');
+                        setViewMode('start_hiking');
+                        setTeamIdInput('');
+                        
+                        if (onJoinGroupHike) {
+                          onJoinGroupHike(groupObj);
+                        }
+                      } catch (error) {
+                        console.error('Error joining team:', error);
+                        alert('Failed to join team. Please check the link and try again.');
+                      }
                     }}
                   >
-                    Search
+                    Join
                   </button>
                 </div>
               </div>
@@ -2229,7 +2493,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
              
              {/* 🆕 Route Info Button (Left Side) */}
              <button 
-                onClick={() => alert(`Route Info:\nName: ${activeRoute.name}\nDist: ${activeRoute.distance}\nTime: ${activeRoute.duration}\nDiff: ${activeRoute.difficulty}/5`)}
+                onClick={() => setShowRouteInfoModal(true)}
                 className="absolute top-4 left-4 z-10 p-2.5 bg-white/90 rounded-full shadow-lg text-hike-green border border-white/40 backdrop-blur-sm"
              >
                 <Info size={20} />
@@ -2330,14 +2594,37 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                if (data) canPassId = true;
                             }
                             
+                            const snapshotCoords = (activeRoute.coordinates && activeRoute.coordinates.length > 0)
+                              ? activeRoute.coordinates
+                              : mergeSegmentCoordinates((activeRoute as any).segments || []);
+
+                            const targetRouteData = {
+                              id: activeRoute.id,
+                              name: activeRoute.name,
+                              region: activeRoute.region || 'Hong Kong',
+                              description: activeRoute.description || '',
+                              distance: activeRoute.distance,
+                              duration: activeRoute.duration,
+                              difficulty: activeRoute.difficulty,
+                              elevationGain: (activeRoute as any).elevationGain || 0,
+                              coordinates: snapshotCoords,
+                              segments: (activeRoute as any).segments || []
+                            };
+
                             const { error } = await supabase
                               .from('teams')
                               .update({ 
                                 status: 'confirmed', 
                                 target_route_id: canPassId ? activeRoute.id : null, 
-                                target_route_name: activeRoute.name 
+                                target_route_name: activeRoute.name,
+                                target_route_data: targetRouteData
                               })
                               .eq('id', createdGroup.id);
+                            
+                            if (!error) {
+                                // If successful, also update local state immediately so teammate sees it
+                                setCreatedGroup(prev => prev ? ({ ...prev, status: 'confirmed', routeId: activeRoute.id }) : null);
+                            }
                             
                             if (error) {
                                 console.error('Supabase update error:', error);
@@ -2403,29 +2690,29 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                   )}
                 </div>
               ) : activeRoute.isUserPublished ? (
-                /* 🆕 Community Review Mode */
-                <div className="space-y-3">
-                  {/* Waypoints Preview */}
-                  {((activeRoute as any).waypoints && (activeRoute as any).waypoints.length > 0) && (
-                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                      <h4 className="text-xs text-gray-500 font-bold uppercase tracking-widest mb-3">Community Waypoints</h4>
-                      <div className="space-y-2">
-                        {((activeRoute as any).waypoints).slice(0, 3).map((wp: any, idx: number) => (
-                          <div key={idx} className="flex items-center gap-2 text-sm text-gray-700 bg-white p-2 rounded-lg border border-gray-100">
-                            <span className={wp.type === 'photo' ? 'text-blue-500' : 'text-red-500'}>{wp.type === 'photo' ? '📷' : '📍'}</span>
-                            <span className="truncate flex-1">{wp.note || 'Waypoint'}</span>
-                          </div>
-                        ))}
-                        {((activeRoute as any).waypoints).length > 3 && (
-                          <div className="text-xs text-gray-400 text-center pt-1">+ {((activeRoute as any).waypoints).length - 3} more on map</div>
-                        )}
+                <>
+                  {/* 🆕 Community Review Mode */}
+                  <div className="space-y-3">
+                    {/* Waypoints Preview */}
+                    {((activeRoute as any).waypoints && (activeRoute as any).waypoints.length > 0) && (
+                      <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                        <h4 className="text-xs text-gray-500 font-bold uppercase tracking-widest mb-3">Community Waypoints</h4>
+                        <div className="space-y-2">
+                          {((activeRoute as any).waypoints).slice(0, 3).map((wp: any, idx: number) => (
+                            <div key={idx} className="flex items-center gap-2 text-sm text-gray-700 bg-white p-2 rounded-lg border border-gray-100">
+                              <span className={wp.type === 'photo' ? 'text-blue-500' : 'text-red-500'}>{wp.type === 'photo' ? '📷' : '📍'}</span>
+                              <span className="truncate flex-1">{wp.note || 'Waypoint'}</span>
+                            </div>
+                          ))}
+                          {((activeRoute as any).waypoints).length > 3 && (
+                            <div className="text-xs text-gray-400 text-center pt-1">+ {((activeRoute as any).waypoints).length - 3} more on map</div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  <button 
-                    onClick={() => {
-                        // 将 Route 转换为 Track 格式供回顾
+                    <button 
+                      onClick={() => {
                         const track: Track = {
                           id: activeRoute.id,
                           name: activeRoute.name,
@@ -2437,28 +2724,29 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                           waypoints: (activeRoute as any).waypoints || []
                         };
                         onReviewTrack(track);
-                    }}
-                    className="w-full bg-gradient-to-r from-orange-500 to-orange-600 text-white py-3 rounded-full font-bold shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-2"
-                  >
-                    <History size={20} /> Review Hike on Map
-                  </button>
-                  <button 
-                    onClick={() => {
+                      }}
+                      className="w-full bg-gradient-to-r from-orange-500 to-orange-600 text-white py-3 rounded-full font-bold shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-2"
+                    >
+                    <HistoryIcon size={20} /> Review Hike on Map
+                    </button>
+                    <button 
+                      onClick={() => {
                         setGroupTitle(`Hike at ${activeRoute.name}`);
                         setViewMode('start_hiking');
                         setStartSelection('group');
                         setActiveRouteId(null);
-                    }}
-                    className="w-full bg-white text-orange-600 border border-orange-200 py-3 rounded-full font-bold shadow-sm active:scale-95 transition-transform flex items-center justify-center gap-2 hover:bg-orange-50"
-                  >
-                    <Users size={20} /> Use Route for Group Hike
-                  </button>
-                </div>
+                      }}
+                      className="w-full bg-white text-orange-600 border border-orange-200 py-3 rounded-full font-bold shadow-sm active:scale-95 transition-transform flex items-center justify-center gap-2 hover:bg-orange-50"
+                    >
+                      <Users size={20} /> Use Route for Group Hike
+                    </button>
+                  </div>
+                </>
               ) : (
                 <>
                   <button 
                     onClick={() => {
-                        handleSelectRoute(activeRoute.id);
+                      handleSelectRoute(activeRoute.id);
                     }}
                     className="w-full bg-hike-green text-white py-3 rounded-full font-bold shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-2"
                   >
@@ -2466,10 +2754,10 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                   </button>
                   <button 
                     onClick={() => {
-                        setGroupTitle(`Hike at ${activeRoute.name}`);
-                        setViewMode('start_hiking');
-                        setStartSelection('group');
-                        setActiveRouteId(null);
+                      setGroupTitle(`Hike at ${activeRoute.name}`);
+                      setViewMode('start_hiking');
+                      setStartSelection('group');
+                      setActiveRouteId(null);
                     }}
                     className="w-full bg-orange-500 text-white py-3 rounded-full font-bold shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-2"
                   >
@@ -2478,7 +2766,6 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                 </>
               )}
             </div>
-
             {/* Description */}
             <div className="select-text">
               <h3 className="font-bold text-lg mb-2 text-gray-800 select-text">Route Description</h3>
@@ -2486,8 +2773,34 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                 {activeRoute.description}
               </p>
             </div>
+            {/* Route Info Modal */}
+            {showRouteInfoModal && (
+              <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[3000] flex items-center justify-center p-6 animate-fade-in" onClick={() => setShowRouteInfoModal(false)}>
+                <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl relative" onClick={e => e.stopPropagation()}>
+                  <button onClick={() => setShowRouteInfoModal(false)} className="absolute top-4 right-4 p-2 text-gray-400 hover:bg-gray-100 rounded-full"><X size={20}/></button>
+                  <h3 className="text-xl font-black text-gray-900 mb-4">Route Info</h3>
+                  <div className="space-y-3 mb-6">
+                    <div className="flex justify-between border-b pb-2"><span className="text-gray-500">Name</span><span className="font-bold text-gray-900 text-right max-w-[200px] truncate">{activeRoute.name}</span></div>
+                    <div className="flex justify-between border-b pb-2"><span className="text-gray-500">Distance</span><span className="font-bold text-gray-900">{activeRoute.distance}</span></div>
+                    <div className="flex justify-between border-b pb-2"><span className="text-gray-500">Time</span><span className="font-bold text-gray-900">{activeRoute.duration}</span></div>
+                    <div className="flex justify-between border-b pb-2"><span className="text-gray-500">Difficulty</span><span className="font-bold text-gray-900">{activeRoute.difficulty}/5</span></div>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setShowRouteInfoModal(false);
+                      // Trigger route selection and pass flag
+                      (activeRoute as any).trigger_reminders_prompt = true;
+                      handleSelectRoute(activeRoute.id);
+                    }}
+                    className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 text-white py-3.5 rounded-xl font-bold shadow-lg flex items-center justify-center gap-2"
+                  >
+                    <Sparkles size={18} /> 本条路线reminders提示
+                  </button>
+                </div>
+              </div>
+            )}
 
-             {/* Comments */}
+            {/* Comments */}
              <div className="border-t pt-6">
                 <h3 className="font-bold text-lg mb-4 text-gray-800 flex justify-between items-center">
                   Hikers' Reviews <span className="text-sm font-normal text-gray-500">{MOCK_REVIEWS.length * 32} reviews</span>
@@ -2536,8 +2849,12 @@ const PlanningView: React.FC<PlanningViewProps> = ({
           setShowTeamDetailsView(false);
           // If route confirmed and user clicks back, they might want to see the route
           const { data: teamData } = await supabase.from('teams').select('*').eq('id', createdGroup.id).single();
-          if (teamData?.status === 'confirmed' || teamData?.target_route_id) {
-            handleSelectRoute(teamData.target_route_id, teamData.created_by === currentUserId);
+          if (teamData?.status === 'confirmed' || teamData?.target_route_id || (teamData as any)?.target_route_data) {
+            if ((teamData as any)?.target_route_data) {
+              startRouteFromSnapshot((teamData as any).target_route_data, teamData.created_by === currentUserId);
+            } else if (teamData?.target_route_id) {
+              handleSelectRoute(teamData.target_route_id, teamData.created_by === currentUserId);
+            }
           } else {
              // Otherwise just go back to start selection
              setStartSelection('');
@@ -2545,7 +2862,9 @@ const PlanningView: React.FC<PlanningViewProps> = ({
         }}
         onStartHike={async () => {
           const { data: teamData } = await supabase.from('teams').select('*').eq('id', createdGroup.id).single();
-          if (teamData?.target_route_id) {
+          if ((teamData as any)?.target_route_data) {
+            startRouteFromSnapshot((teamData as any).target_route_data, teamData.created_by === currentUserId);
+          } else if (teamData?.target_route_id) {
             handleSelectRoute(teamData.target_route_id, teamData.created_by === currentUserId);
           }
         }}

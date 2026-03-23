@@ -8,6 +8,7 @@ import CompanionView from './components/CompanionView';
 import HomeView from './components/HomeView';
 import TeamMemberPreferenceForm from './components/TeamMemberPreferenceForm';
 import { Map, User as UserIcon, Compass } from 'lucide-react';
+import { uploadRouteToCommunity } from './services/segmentRoutingService';
 interface AppState {
   error: string | null;
 }
@@ -131,6 +132,21 @@ const App: React.FC = () => {
                total_hikes_completed: 1
              });
           }
+
+          // If this was a team hike, mark it as completed (Done)
+          if (selectedTeamId) {
+            const { error: teamUpdateError } = await supabase
+              .from('teams')
+              .update({ status: 'completed', finished_at: new Date().toISOString() })
+              .eq('id', selectedTeamId);
+            if (teamUpdateError) {
+              console.error('Failed to mark team completed:', teamUpdateError);
+            } else {
+              setMyGroupHikes(prev =>
+                prev.map(t => (t.id === selectedTeamId ? { ...t, status: 'completed' } : t)) as any
+              );
+            }
+          }
         }
       } catch (err) {
         console.error('Exception saving track:', err);
@@ -138,12 +154,46 @@ const App: React.FC = () => {
     }
   };
 
-  const handlePublishTrack = (track: Track) => {
-    console.log('Track published:', track);
+  const handlePublishTrack = async (track: Track) => {
+    if (!user?.id) return;
+    try {
+      const distanceVal = parseFloat((track.distance || '').replace(/[^0-9.]/g, '')) || 0;
+      const durationVal = typeof track.duration === 'string'
+        ? parseFloat(track.duration.replace(/[^0-9.]/g, '')) || 0
+        : Number(track.duration || 0);
+
+      await uploadRouteToCommunity(user.id, {
+        name: track.name || 'My Hike',
+        description: 'Shared from my hike history',
+        region: 'Hong Kong',
+        tags: ['community'],
+        route_data: {
+          distance: `${distanceVal.toFixed(1)}km`,
+          distance_val: distanceVal,
+          duration: typeof track.duration === 'string' ? track.duration : `${Math.round(durationVal)}h`,
+          duration_val: durationVal,
+          difficulty: track.difficulty || 3,
+          elevationGain: (track as any).elevationGain || 0,
+          coordinates: track.coordinates || [],
+          waypoints: (track as any).waypoints || []
+        }
+      });
+    } catch (e) {
+      console.error('Failed to publish track:', e);
+      throw e;
+    }
   };
 
-  const handleDeleteGroupHike = (groupId: string) => {
-    setMyGroupHikes(prev => prev.filter(h => h.id !== groupId));
+  const handleDeleteGroupHike = async (groupId: string) => {
+    // Mark as completed for consistency with Done tag behavior
+    const { error: teamUpdateError } = await supabase
+      .from('teams')
+      .update({ status: 'completed', finished_at: new Date().toISOString() })
+      .eq('id', groupId);
+    if (teamUpdateError) {
+      console.error('Failed to mark team completed on exit:', teamUpdateError);
+    }
+    setMyGroupHikes(prev => prev.map(t => (t.id === groupId ? { ...t, status: 'completed' } : t)) as any);
   };
 
   useEffect(() => {
@@ -161,13 +211,23 @@ const App: React.FC = () => {
     // 2. 监听状态变化（登录或退出）
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       const currentUser = session?.user as any || null;
-      setUser(currentUser);
+      // Don't override if it's already a guest session
+      setUser(prev => {
+        if (prev?.isGuest && !currentUser) return prev;
+        return currentUser;
+      });
+      
       if (currentUser) {
         loadUserTracks(currentUser.id);
         loadUserTeams(currentUser.id);
       } else {
-        setMyTracks([]);
-        setMyGroupHikes([]);
+        // Only clear if not guest
+        setUser(prev => {
+          if (prev?.isGuest) return prev;
+          setMyTracks([]);
+          setMyGroupHikes([]);
+          return null;
+        });
       }
     });
 
@@ -213,25 +273,44 @@ const App: React.FC = () => {
   };
 
   const loadUserTracks = async (userId: string) => {
-    const { data, error } = await supabase
-      .from('user_tracks')
-      .select('*')
-      .eq('user_id', userId)
-      .order('date', { ascending: false });
-      
-    if (data) {
-      // Map DB fields to Track interface
-      const mappedTracks: Track[] = data.map(t => ({
-        id: t.id,
-        name: t.name,
-        date: new Date(t.date), // Convert string to Date
-        duration: t.duration,
-        distance: t.distance,
-        difficulty: t.difficulty || 0,
-        coordinates: t.coordinates,
-        waypoints: t.waypoints
-      }));
-      setMyTracks(mappedTracks);
+    try {
+      const { data, error } = await supabase
+        .from('user_tracks')
+        .select('*')
+        .eq('user_id', userId)
+        .order('date', { ascending: false });
+
+      if (error) {
+        console.error('Failed to load tracks:', error);
+        return;
+      }
+
+      if (data) {
+        // Map DB fields to Track interface
+        const mappedTracks: Track[] = data.map(t => {
+          let coords = t.coordinates;
+          let waypoints = t.waypoints;
+          try {
+            if (typeof coords === 'string') coords = JSON.parse(coords);
+            if (typeof waypoints === 'string') waypoints = JSON.parse(waypoints);
+          } catch {}
+          return {
+            id: t.id,
+            name: t.name,
+            date: t.date ? new Date(t.date) : new Date(),
+            duration: t.duration,
+            distance: t.distance,
+            difficulty: t.difficulty || 0,
+            coordinates: coords,
+            waypoints: waypoints
+          };
+        });
+        setMyTracks(mappedTracks);
+      } else {
+        setMyTracks([]);
+      }
+    } catch (e) {
+      console.error('Failed to load tracks:', e);
     }
   };
 
@@ -252,6 +331,38 @@ const App: React.FC = () => {
 
   // 🆕 回顾历史记录
   const handleReviewTrack = (track: Track) => {
+    const normalizePoint = (p: any): [number, number] | null => {
+      if (Array.isArray(p) && p.length >= 2) {
+        const [a, b] = p;
+        if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b)) {
+          return [a, b];
+        }
+      }
+      if (p && typeof p === 'object' && typeof p.lat === 'number' && typeof p.lng === 'number') {
+        if (Number.isFinite(p.lat) && Number.isFinite(p.lng)) {
+          return [p.lat, p.lng];
+        }
+      }
+      return null;
+    };
+
+    const sanitizeCoords = (raw: any): [number, number][] => {
+      if (!Array.isArray(raw)) return [];
+      const cleaned: [number, number][] = [];
+      raw.forEach((pt) => {
+        const norm = normalizePoint(pt);
+        if (norm) cleaned.push(norm);
+      });
+      return cleaned;
+    };
+
+    let coords: any = track.coordinates;
+    let waypoints: any = track.waypoints;
+    try {
+      if (typeof coords === 'string') coords = JSON.parse(coords);
+      if (typeof waypoints === 'string') waypoints = JSON.parse(waypoints);
+    } catch {}
+
     const reviewRoute: Route = {
       id: track.id,
       name: track.name,
@@ -263,11 +374,11 @@ const App: React.FC = () => {
       startPoint: '',
       endPoint: '',
       elevationGain: 0,
-      coordinates: track.coordinates
+      coordinates: sanitizeCoords(coords)
     };
     // 注入特殊标志
     (reviewRoute as any).isReview = true;
-    (reviewRoute as any).historyWaypoints = track.waypoints;
+    (reviewRoute as any).historyWaypoints = Array.isArray(waypoints) ? waypoints : [];
     
     setActiveRoute(reviewRoute);
     setIsLeader(false);
@@ -300,10 +411,15 @@ const App: React.FC = () => {
   const handleStartGroupHike = async (teamId: string) => {
     try {
       const { data: teamData } = await supabase.from('teams').select('*').eq('id', teamId).single();
-      if (teamData && (teamData.status === 'confirmed' || teamData.target_route_id)) {
+    if (teamData && (teamData.status === 'confirmed' || teamData.target_route_id || (teamData as any)?.target_route_data)) {
         let finalRouteData: any = null;
+        const snapshot = (teamData as any)?.target_route_data;
 
-        if (teamData.target_route_id) {
+        if (snapshot) {
+          finalRouteData = snapshot;
+        }
+
+        if (!finalRouteData && teamData.target_route_id) {
             // 1. Try composed_routes first
             const { data: composedData } = await supabase.from('composed_routes').select('*').eq('id', teamData.target_route_id).single();
             // 2. Try official routes
@@ -316,21 +432,29 @@ const App: React.FC = () => {
         }
         
         const route: Route = {
-          id: teamData.target_route_id || 'mock_route_' + Date.now(),
-          name: teamData.target_route_name || finalRouteData?.name || 'Team Hike',
-          region: finalRouteData?.region || 'Hong Kong',
-          distance: finalRouteData?.total_distance ? `${finalRouteData.total_distance}km` : '0km',
-          duration: finalRouteData?.total_duration_minutes ? `${Math.round(finalRouteData.total_duration_minutes/60)}h` : '0h',
-          difficulty: finalRouteData?.difficulty_level || 3,
-          description: finalRouteData?.description || 'Team hike organized by captain.',
+          id: snapshot?.id || teamData.target_route_id || 'mock_route_' + Date.now(),
+          name: snapshot?.name || teamData.target_route_name || finalRouteData?.name || 'Team Hike',
+          region: snapshot?.region || finalRouteData?.region || 'Hong Kong',
+          distance: snapshot?.distance || (finalRouteData?.total_distance ? `${finalRouteData.total_distance}km` : '0km'),
+          duration: snapshot?.duration || (finalRouteData?.total_duration_minutes ? `${Math.round(finalRouteData.total_duration_minutes/60)}h` : '0h'),
+          difficulty: snapshot?.difficulty || finalRouteData?.difficulty_level || 3,
+          description: snapshot?.description || finalRouteData?.description || 'Team hike organized by captain.',
           startPoint: '',
           endPoint: '',
-          elevationGain: finalRouteData?.total_elevation_gain || 0,
-          coordinates: finalRouteData?.full_coordinates || []
+          elevationGain: snapshot?.elevationGain || finalRouteData?.total_elevation_gain || 0,
+          coordinates: snapshot?.coordinates || finalRouteData?.full_coordinates || []
         };
 
+        // Fallback for coordinates if they're missing but we have segments
+        if ((!route.coordinates || route.coordinates.length === 0) && (snapshot?.segments || finalRouteData?.segments)) {
+          const { mergeSegmentCoordinates } = await import('./services/segmentRoutingService');
+          route.coordinates = mergeSegmentCoordinates(snapshot?.segments || finalRouteData.segments);
+        }
+
         if (!route.coordinates || route.coordinates.length === 0) {
-           route.coordinates = [[22.2435, 114.2384], [22.2355, 114.2415]];
+           // As a last resort for HK routes if still missing
+           const { DRAGONS_BACK_COORDINATES } = await import('./utils/trailData');
+           route.coordinates = DRAGONS_BACK_COORDINATES;
         }
         
         setActiveRoute(route);
@@ -355,42 +479,93 @@ const App: React.FC = () => {
 
   // --- 逻辑判断：如果未登录显示登录页 ---
   if (loading) return <div className="h-screen flex items-center justify-center">Loading...</div>;
-  
+
+  const renderNav = () => (
+    <nav className="fixed bottom-0 w-full bg-white border-t flex justify-around py-3 z-[9999] app-bottom-nav shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
+      <button 
+        onClick={() => {
+          if (teamIdFromUrl) {
+            window.history.replaceState({}, document.title, window.location.pathname);
+            window.location.href = '/';
+            return;
+          }
+          if (activeTab === Tab.PLANNING) {
+             setSelectedTeamId(undefined);
+             setActiveRoute(null);
+             setExploreKey(prev => prev + 1);
+          } else {
+             setActiveTab(Tab.PLANNING);
+             setSelectedTeamId(undefined);
+             setActiveRoute(null);
+          }
+        }} 
+        className={(!teamIdFromUrl && activeTab === Tab.PLANNING) ? 'text-hike-green' : 'text-gray-400'}
+      >
+        <Compass size={24} /><span className="text-[10px]">Explore</span>
+      </button>
+      <button 
+        onClick={() => {
+          if (teamIdFromUrl) return;
+          setActiveTab(Tab.COMPANION);
+        }} 
+        className={(!teamIdFromUrl && activeTab === Tab.COMPANION) || teamIdFromUrl ? 'text-hike-green' : 'text-gray-400'}
+      >
+        <Map size={24} /><span className="text-[10px]">HikePal AI</span>
+      </button>
+      <button 
+        onClick={() => {
+          if (teamIdFromUrl) {
+            window.history.replaceState({}, document.title, window.location.pathname);
+            window.location.href = '/';
+            return;
+          }
+          setActiveTab(Tab.HOME);
+        }} 
+        className={(!teamIdFromUrl && activeTab === Tab.HOME) ? 'text-hike-green' : 'text-gray-400'}
+      >
+        <UserIcon size={24} /><span className="text-[10px]">Profile</span>
+      </button>
+    </nav>
+  );
+
   if (teamIdFromUrl) {
     if (guestCompletedTrack) {
       // 🆕 View shown to guests after they finish a hike
       return (
-        <div className="flex flex-col h-screen bg-gray-50 p-6 items-center justify-center animate-fade-in">
-           <div className="bg-white rounded-[32px] shadow-2xl p-8 max-w-sm w-full text-center border border-gray-100">
-              <div className="w-16 h-16 bg-green-100 text-hike-green rounded-full flex items-center justify-center mx-auto mb-6">
-                 <Compass size={32} />
-              </div>
-              <h2 className="text-2xl font-black text-gray-900 mb-2">Hike Completed!</h2>
-              <p className="text-sm text-gray-500 mb-8">You've successfully finished the route with your team.</p>
-              
-              <div className="bg-gray-50 rounded-2xl p-5 mb-8 border border-gray-100 text-left">
-                 <div className="font-bold text-gray-900 mb-4">{guestCompletedTrack.name}</div>
-                 <div className="grid grid-cols-2 gap-4">
-                    <div>
-                       <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Distance</div>
-                       <div className="font-black text-gray-900">{guestCompletedTrack.distance}</div>
-                    </div>
-                    <div>
-                       <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Time</div>
-                       <div className="font-black text-gray-900">{guestCompletedTrack.duration}</div>
-                    </div>
-                 </div>
-              </div>
+        <div className="flex flex-col h-screen bg-gray-50">
+          <main className="flex-1 overflow-y-auto no-scrollbar relative app-main app-safe-top flex items-center justify-center p-6 pb-20">
+             <div className="bg-white rounded-[32px] shadow-2xl p-8 max-w-sm w-full text-center border border-gray-100">
+                <div className="w-16 h-16 bg-green-100 text-hike-green rounded-full flex items-center justify-center mx-auto mb-6">
+                   <Compass size={32} />
+                </div>
+                <h2 className="text-2xl font-black text-gray-900 mb-2">Hike Completed!</h2>
+                <p className="text-sm text-gray-500 mb-8">You've successfully finished the route with your team.</p>
+                
+                <div className="bg-gray-50 rounded-2xl p-5 mb-8 border border-gray-100 text-left">
+                   <div className="font-bold text-gray-900 mb-4">{guestCompletedTrack.name}</div>
+                   <div className="grid grid-cols-2 gap-4">
+                      <div>
+                         <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Distance</div>
+                         <div className="font-black text-gray-900">{guestCompletedTrack.distance}</div>
+                      </div>
+                      <div>
+                         <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Time</div>
+                         <div className="font-black text-gray-900">{guestCompletedTrack.duration}</div>
+                      </div>
+                   </div>
+                </div>
 
-              <button 
-                onClick={() => {
-                   window.location.href = '/'; // Go back to root (login/signup page)
-                }}
-                className="w-full bg-gray-900 text-white py-4 rounded-2xl font-bold shadow-lg active:scale-95 transition-all"
-              >
-                Sign Up to Save Next Time
-              </button>
-           </div>
+                <button 
+                  onClick={() => {
+                     window.location.href = '/'; // Go back to root (login/signup page)
+                  }}
+                  className="w-full bg-gray-900 text-white py-4 rounded-2xl font-bold shadow-lg active:scale-95 transition-all"
+                >
+                  Sign Up to Save Next Time
+                </button>
+             </div>
+          </main>
+          {renderNav()}
         </div>
       );
     }
@@ -398,7 +573,7 @@ const App: React.FC = () => {
     if (guestActiveRoute) {
       return (
         <div className="flex flex-col h-screen bg-gray-50">
-          <main className="flex-1 overflow-y-auto no-scrollbar pb-0 relative">
+          <main className="flex-1 overflow-y-auto no-scrollbar relative app-main app-safe-top pb-16">
             <CompanionView 
               user={user || {id: 'guest', name: 'Guest', email: '', role: 'hiker'}} // Use logged in user if available
               activeRoute={guestActiveRoute}
@@ -421,85 +596,112 @@ const App: React.FC = () => {
               onBack={() => setGuestActiveRoute(null)}
             />
           </main>
+          {renderNav()}
         </div>
       );
     }
 
-    return <TeamMemberPreferenceForm 
-      teamId={teamIdFromUrl}
-      onStartHike={async () => {
-         // User trying to start hike from group link
-         try {
-           const { data: teamData, error: teamError } = await supabase.from('teams').select('*').eq('id', teamIdFromUrl).single();
-           
-           if (teamError) throw teamError;
-
-           if (teamData?.status === 'confirmed' || teamData?.target_route_id) {
-             console.log('Starting hike for teammate. Route ID:', teamData.target_route_id, 'Name:', teamData.target_route_name);
-             
-             let finalRouteData: any = null;
-             
-             // If we have a UUID, try to fetch from DB
-             if (teamData.target_route_id) {
-                 // 1. Try composed_routes first (for AI/Custom routes)
-                 const { data: composedData } = await supabase.from('composed_routes').select('*').eq('id', teamData.target_route_id).single();
+    return (
+      <div className="flex flex-col h-screen bg-gray-50">
+        <main className="flex-1 overflow-y-auto no-scrollbar relative app-main app-safe-top pb-16">
+          <TeamMemberPreferenceForm 
+            teamId={teamIdFromUrl}
+            onStartHike={async () => {
+               // User trying to start hike from group link
+               try {
+                 const { data: teamData, error: teamError } = await supabase.from('teams').select('*').eq('id', teamIdFromUrl).single();
                  
-                 // 2. Try official routes table (for standard trails)
-                 if (!composedData) {
-                    const { data: officialData } = await supabase.from('routes').select('*').eq('id', teamData.target_route_id).single();
-                    finalRouteData = officialData;
+                 if (teamError) throw teamError;
+
+                 if (teamData?.status === 'confirmed' || teamData?.target_route_id || (teamData as any)?.target_route_data) {
+                   console.log('Starting hike for teammate. Route ID:', teamData.target_route_id, 'Name:', teamData.target_route_name);
+                   
+                   let finalRouteData: any = null;
+                   const snapshot = (teamData as any)?.target_route_data;
+                   
+                   if (snapshot) {
+                     finalRouteData = snapshot;
+                   }
+
+                   // If we have a UUID, try to fetch from DB
+                   if (!finalRouteData && teamData.target_route_id) {
+                       // 1. Try composed_routes first (for AI/Custom routes)
+                       const { data: composedData } = await supabase.from('composed_routes').select('*').eq('id', teamData.target_route_id).single();
+                       
+                       // 2. Try official routes table (for standard trails)
+                       if (!composedData) {
+                          const { data: officialData } = await supabase.from('routes').select('*').eq('id', teamData.target_route_id).single();
+                          finalRouteData = officialData;
+                       } else {
+                          finalRouteData = composedData;
+                       }
+                   }
+
+                   if (!finalRouteData) {
+                      console.warn('Route data not found in DB or no route ID provided. Using fallback minimal info based on name.');
+                   }
+
+                   const route: Route = {
+                     id: snapshot?.id || teamData.target_route_id || 'mock_route_' + Date.now(),
+                     name: snapshot?.name || teamData.target_route_name || finalRouteData?.name || 'Team Hike',
+                     region: snapshot?.region || finalRouteData?.region || 'Hong Kong',
+                     distance: snapshot?.distance || (finalRouteData?.total_distance ? `${finalRouteData.total_distance}km` : '0km'),
+                     duration: snapshot?.duration || (finalRouteData?.total_duration_minutes ? `${Math.round(finalRouteData.total_duration_minutes/60)}h` : '0h'),
+                     difficulty: snapshot?.difficulty || finalRouteData?.difficulty_level || 3,
+                     description: snapshot?.description || finalRouteData?.description || 'Team hike organized by captain.',
+                     startPoint: '', endPoint: '', elevationGain: snapshot?.elevationGain || finalRouteData?.total_elevation_gain || 0,
+                     coordinates: snapshot?.coordinates || finalRouteData?.full_coordinates || []
+                   };
+
+                   // Fallback for coordinates if they're missing but we have segments
+                   if ((!route.coordinates || route.coordinates.length === 0) && (snapshot?.segments || finalRouteData?.segments)) {
+                     const { mergeSegmentCoordinates } = await import('./services/segmentRoutingService');
+                     route.coordinates = mergeSegmentCoordinates(snapshot?.segments || finalRouteData.segments);
+                   }
+                   
+                   if (!route.coordinates || route.coordinates.length === 0) {
+                      console.warn('No coordinates found for route:', teamData.target_route_id || teamData.target_route_name);
+                      // Fallback coordinates if absolutely necessary
+                      const { DRAGONS_BACK_COORDINATES } = await import('./utils/trailData');
+                      route.coordinates = DRAGONS_BACK_COORDINATES; 
+                   }
+
+                   setGuestActiveRoute(route);
                  } else {
-                    finalRouteData = composedData;
+                   alert('Route not confirmed yet. Please wait for the captain.');
                  }
-             }
-
-             if (!finalRouteData) {
-                console.warn('Route data not found in DB or no route ID provided. Using fallback minimal info based on name.');
-             }
-
-             const route: Route = {
-               id: teamData.target_route_id || 'mock_route_' + Date.now(),
-               name: teamData.target_route_name || finalRouteData?.name || 'Team Hike',
-               region: finalRouteData?.region || 'Hong Kong',
-               distance: finalRouteData?.total_distance ? `${finalRouteData.total_distance}km` : '0km',
-               duration: finalRouteData?.total_duration_minutes ? `${Math.round(finalRouteData.total_duration_minutes/60)}h` : '0h',
-               difficulty: finalRouteData?.difficulty_level || 3,
-               description: finalRouteData?.description || 'Team hike organized by captain.',
-               startPoint: '', endPoint: '', elevationGain: finalRouteData?.total_elevation_gain || 0,
-               coordinates: finalRouteData?.full_coordinates || []
-             };
-             
-             if (!route.coordinates || route.coordinates.length === 0) {
-                console.warn('No coordinates found for route:', teamData.target_route_id || teamData.target_route_name);
-                // Fallback coordinates if absolutely necessary
-                route.coordinates = [[22.2435, 114.2384], [22.2355, 114.2415]]; 
-             }
-
-             setGuestActiveRoute(route);
-           } else {
-             alert('Route not confirmed yet. Please wait for the captain.');
-           }
-         } catch (err) {
-           console.error('Error in onStartHike:', err);
-           alert('Failed to start hike. Please try again.');
-         }
-      }}
-      onBack={user ? () => {
-        // If logged in, clear URL and go to home
-        window.history.replaceState({}, document.title, window.location.pathname);
-        window.location.href = '/';
-      } : undefined} // If not logged in, don't show back button, force them to stay on the waiting page
-    />;
+               } catch (err) {
+                 console.error('Error in onStartHike:', err);
+                 alert('Failed to start hike. Please try again.');
+               }
+            }}
+            onBack={user ? () => {
+              // If logged in, clear URL and go to home
+              window.history.replaceState({}, document.title, window.location.pathname);
+              window.location.href = '/';
+            } : undefined} // If not logged in, don't show back button, force them to stay on the waiting page
+          />
+        </main>
+        {renderNav()}
+      </div>
+    );
   }
 
   if (!user) {
-    return <AuthPage onLoginSuccess={(u) => setUser(u)} />;
+    return (
+      <div className="flex flex-col h-screen bg-gray-50">
+        <main className="flex-1 overflow-y-auto no-scrollbar relative app-main app-safe-top pb-16">
+          <AuthPage onLoginSuccess={(u) => setUser(u)} />
+        </main>
+        {renderNav()}
+      </div>
+    );
   }
 
   // --- 逻辑判断：如果已登录显示主界面 ---
   return (
     <div className="flex flex-col h-screen bg-gray-50">
-      <main className="flex-1 overflow-y-auto no-scrollbar pb-20 relative">
+      <main className="flex-1 overflow-y-auto no-scrollbar relative app-main app-safe-top pb-16">
         <div style={{ display: activeTab === Tab.PLANNING ? 'block' : 'none', height: '100%' }}>
           <PlanningView 
             key={`explore-${exploreKey}`}
@@ -511,6 +713,7 @@ const App: React.FC = () => {
                 setIsLeader((route as any).isLeader);
               }
             }}
+            onReviewTrack={handleReviewTrack}
             initialTeamId={selectedTeamId}
           />
         </div>
@@ -529,7 +732,21 @@ const App: React.FC = () => {
             sessionId={sessionId}
             teamId={selectedTeamId}
             isLeader={isLeader}
-            onBack={() => {
+            onBack={async () => {
+              // If user quits a team hike, mark team as completed (Done)
+              if (selectedTeamId) {
+                const { error: teamUpdateError } = await supabase
+                  .from('teams')
+                  .update({ status: 'completed', finished_at: new Date().toISOString() })
+                  .eq('id', selectedTeamId);
+                if (teamUpdateError) {
+                  console.error('Failed to mark team completed on quit:', teamUpdateError);
+                } else {
+                  setMyGroupHikes(prev =>
+                    prev.map(t => (t.id === selectedTeamId ? { ...t, status: 'completed' } : t)) as any
+                  );
+                }
+              }
               setActiveTab(Tab.PLANNING);
               setActiveRoute(null);
             }}
@@ -538,12 +755,72 @@ const App: React.FC = () => {
         {activeTab === Tab.HOME && (
           <HomeView 
             user={user}
-            onLogout={() => supabase.auth.signOut()}
+            onLogout={() => {
+              if (user.isGuest) {
+                setUser(null);
+                setActiveTab(Tab.PLANNING);
+              } else {
+                supabase.auth.signOut();
+              }
+            }}
             myTracks={myTracks}
             myGroupHikes={myGroupHikes}
             onPublishTrack={handlePublishTrack}
             onDeleteGroupHike={handleDeleteGroupHike}
             onReviewTrack={handleReviewTrack}
+            onPreviewTeamRoute={async (teamId) => {
+              try {
+                const { data: teamData } = await supabase.from('teams').select('*').eq('id', teamId).single();
+                if (teamData && (teamData.target_route_id || (teamData as any)?.target_route_data)) {
+                  let finalRouteData: any = null;
+                  const snapshot = (teamData as any)?.target_route_data;
+                  if (snapshot) {
+                    finalRouteData = snapshot;
+                  }
+                  if (!finalRouteData && teamData.target_route_id) {
+                    const { data: composedData } = await supabase.from('composed_routes').select('*').eq('id', teamData.target_route_id).single();
+                    if (composedData) finalRouteData = composedData;
+                    else {
+                      const { data: officialData } = await supabase.from('routes').select('*').eq('id', teamData.target_route_id).single();
+                      finalRouteData = officialData;
+                    }
+                  }
+
+                  const route: Route = {
+                    id: snapshot?.id || teamData.target_route_id || 'mock_route_' + Date.now(),
+                    name: snapshot?.name || teamData.target_route_name || finalRouteData?.name || 'Team Hike',
+                    region: snapshot?.region || finalRouteData?.region || 'Hong Kong',
+                    distance: snapshot?.distance || (finalRouteData?.total_distance ? `${finalRouteData.total_distance}km` : '0km'),
+                    duration: snapshot?.duration || (finalRouteData?.total_duration_minutes ? `${Math.round(finalRouteData.total_duration_minutes/60)}h` : '0h'),
+                    difficulty: snapshot?.difficulty || finalRouteData?.difficulty_level || 3,
+                    description: snapshot?.description || finalRouteData?.description || 'Team hike organized by captain.',
+                    startPoint: '',
+                    endPoint: '',
+                    elevationGain: snapshot?.elevationGain || finalRouteData?.total_elevation_gain || 0,
+                    coordinates: snapshot?.coordinates || finalRouteData?.full_coordinates || []
+                  };
+
+                  if ((!route.coordinates || route.coordinates.length === 0) && (snapshot?.segments || finalRouteData?.segments)) {
+                    const { mergeSegmentCoordinates } = await import('./services/segmentRoutingService');
+                    route.coordinates = mergeSegmentCoordinates(snapshot?.segments || finalRouteData.segments);
+                  }
+                  if (!route.coordinates || route.coordinates.length === 0) {
+                    const { DRAGONS_BACK_COORDINATES } = await import('./utils/trailData');
+                    route.coordinates = DRAGONS_BACK_COORDINATES;
+                  }
+
+                  setActiveRoute(route);
+                  setIsLeader(false);
+                  setSelectedTeamId(teamId);
+                  setActiveTab(Tab.COMPANION);
+                } else {
+                  alert('No route data available for this team.');
+                }
+              } catch (e) {
+                console.error('Failed to preview team route:', e);
+                alert('Failed to preview route.');
+              }
+            }}
             onGotoPlanning={(teamId) => {
               // 如果团队已确认，尝试直接进入地图
               const team = myGroupHikes.find(h => h.id === teamId);
@@ -556,35 +833,7 @@ const App: React.FC = () => {
           />
         )}
       </main>
-
-      {/* 底部导航栏 */}
-      <nav className="fixed bottom-0 w-full bg-white border-t flex justify-around py-3 z-50">
-        <button 
-          onClick={() => {
-            // 🆕 如果已经是 Explore 且当前在子页面，强制重置
-            if (activeTab === Tab.PLANNING) {
-               // 触发重置
-               setSelectedTeamId(undefined);
-               setActiveRoute(null);
-               // 通过 key 强制重挂载
-               setExploreKey(prev => prev + 1);
-            } else {
-               setActiveTab(Tab.PLANNING);
-               setSelectedTeamId(undefined);
-               setActiveRoute(null);
-            }
-          }} 
-          className={activeTab === Tab.PLANNING ? 'text-hike-green' : 'text-gray-400'}
-        >
-          <Compass size={24} /><span className="text-[10px]">Explore</span>
-        </button>
-        <button onClick={() => setActiveTab(Tab.COMPANION)} className={activeTab === Tab.COMPANION ? 'text-hike-green' : 'text-gray-400'}>
-          <Map size={24} /><span className="text-[10px]">HikePal AI</span>
-        </button>
-        <button onClick={() => setActiveTab(Tab.HOME)} className={activeTab === Tab.HOME ? 'text-hike-green' : 'text-gray-400'}>
-          <UserIcon size={24} /><span className="text-[10px]">Profile</span>
-        </button>
-      </nav>
+      {renderNav()}
     </div>
   );
 };

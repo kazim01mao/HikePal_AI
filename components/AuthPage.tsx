@@ -88,6 +88,17 @@ interface AuthPageProps {
 
 export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
   const [mode, setMode] = useState<AuthMode>(AuthMode.LOGIN);
+
+  const handleGuestLogin = () => {
+    const guestUser: User = {
+      id: 'guest_user',
+      name: 'Guest Explorer',
+      email: 'guest@hikepal.ai',
+      role: 'hiker',
+      isGuest: true
+    };
+    onLoginSuccess(guestUser);
+  };
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -172,7 +183,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
             <Mountain className="h-12 w-12 text-hike-green" />
           </div>
           <h1 className="text-3xl font-black text-stone-800">HikePal</h1>
-          <p className="text-stone-500">香港徒步 AI 助手</p>
+          <p className="text-stone-500">HK Hiking AI Assistant</p>
         </div>
 
         {error && (
@@ -185,7 +196,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
         <form onSubmit={handleSubmit} className="space-y-4">
           {mode === AuthMode.SIGNUP && (
             <Input 
-              label="全名" 
+              label="Full Name" 
               icon={<Mail className="h-4 w-4" />} 
               type="text"
               value={fullName}
@@ -194,7 +205,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
             />
           )}
           <Input 
-            label="电子邮箱" 
+            label="Email Address" 
             icon={<Mail className="h-4 w-4" />} 
             type="email"
             value={email}
@@ -202,7 +213,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
             required
           />
           <Input 
-            label="密码" 
+            label="Password" 
             icon={<Lock className="h-4 w-4" />} 
             type="password"
             value={password}
@@ -210,8 +221,31 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
             required
           />
           <Button type="submit" fullWidth isLoading={loading}>
-            {mode === AuthMode.LOGIN ? '立即登录' : '注册账号'}
+            {mode === AuthMode.LOGIN ? 'Login' : 'Create Account'}
           </Button>
+
+          {mode === AuthMode.LOGIN && (
+            <div className="relative my-6">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-stone-200"></div>
+              </div>
+              <div className="relative flex justify-center text-sm">
+                <span className="px-2 bg-white text-stone-400">OR</span>
+              </div>
+            </div>
+          )}
+
+          {mode === AuthMode.LOGIN && (
+            <Button 
+              type="button" 
+              variant="outline" 
+              fullWidth 
+              onClick={handleGuestLogin}
+              className="border-2 border-emerald-100 text-emerald-700 hover:bg-emerald-50"
+            >
+              Try as Guest
+            </Button>
+          )}
         </form>
 
         <div className="mt-6 text-center">
@@ -219,7 +253,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
             onClick={() => setMode(mode === AuthMode.LOGIN ? AuthMode.SIGNUP : AuthMode.LOGIN)}
             className="text-sm text-hike-green font-bold hover:underline"
           >
-            {mode === AuthMode.LOGIN ? '没有账号？立即注册' : '已有账号？返回登录'}
+            {mode === AuthMode.LOGIN ? "Don't have an account? Sign up" : 'Already have an account? Login'}
           </button>
         </div>
       </div>

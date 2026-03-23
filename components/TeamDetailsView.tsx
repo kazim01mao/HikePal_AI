@@ -178,33 +178,33 @@ const TeamDetailsView: React.FC<TeamDetailsViewProps> = ({
           )}
         </div>
 
-        {/* Start Hike Button / Waiting Status */}
-        <div className={`border-2 rounded-2xl p-4 shadow-sm animate-fade-in text-center ${routeConfirmed ? 'bg-orange-50 border-orange-200' : 'bg-gray-50 border-gray-200'}`}>
-          {routeConfirmed ? (
-            <>
-              <h3 className="font-bold text-orange-900 mb-1">🎉 Route Confirmed!</h3>
-              <p className="text-[10px] text-orange-700 font-bold uppercase mb-2">"{confirmedRouteName}"</p>
-              <p className="text-xs text-orange-800 mb-3">{isTeamLeader ? 'You have finalized the route. Ready to lead the team?' : 'The team leader has finalized the route. Ready to go?'}</p>
-              <button 
-                onClick={async () => {
-                  const { data: { session } } = await supabase.auth.getSession();
-                  if (!session) {
-                    alert('Note: You are not logged in. Your track will not be saved.');
-                  }
-                  
-                  if (onStartHike) {
-                    onStartHike();
-                  } else if (onBack) {
-                    // Fallback for backward compatibility
-                    onBack();
-                  }
-                }} 
-                className="w-full bg-gradient-to-r from-orange-500 to-orange-600 text-white font-bold py-3 rounded-xl shadow-md active:scale-95 transition-transform flex items-center justify-center gap-2"
-              >
-                <Compass size={18} /> {isTeamLeader ? 'Start Hike' : 'View Route & Start'}
-              </button>
-            </>
-          ) : (
+              {/* Start Hike Button / Waiting Status */}
+              <div className={`border-2 rounded-2xl p-4 shadow-sm animate-fade-in text-center ${routeConfirmed ? 'bg-orange-50 border-orange-200' : 'bg-gray-50 border-gray-200'}`}>
+                {routeConfirmed ? (
+                  <>
+                    <h3 className="font-bold text-orange-900 mb-1">🎉 Route Confirmed!</h3>
+                    <p className="text-[10px] text-orange-700 font-bold uppercase mb-2">"{confirmedRouteName}"</p>
+                    <p className="text-xs text-orange-800 mb-3">{isTeamLeader ? 'You have finalized the route. Ready to lead the team?' : 'The team leader has finalized the route. Ready to go?'}</p>
+                    <button 
+                      onClick={async () => {
+                        const { data: { session } } = await supabase.auth.getSession();
+                        if (!session && !teamId.startsWith('guest_')) {
+                          alert('Note: You are not logged in. Your track will not be saved.');
+                        }
+                        
+                        if (onStartHike) {
+                          onStartHike();
+                        } else if (onBack) {
+                          // Fallback for backward compatibility
+                          onBack();
+                        }
+                      }} 
+                      className="w-full bg-gradient-to-r from-orange-500 to-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-2 hover:shadow-orange-500/20"
+                    >
+                      <Compass size={20} /> {isTeamLeader ? 'Start Team Hike' : 'Join Team Hike'}
+                    </button>
+                  </>
+                ) : (
             <>
               <h3 className="font-bold text-gray-900 mb-1">{isTeamLeader ? '⏳ Setting up Route' : '⏳ Waiting for Captain'}</h3>
               <p className="text-xs text-gray-600 mb-3">{isTeamLeader ? 'Invite members and analyze preferences to confirm a route.' : 'Please wait for the captain to analyze preferences and confirm a route.'}</p>
