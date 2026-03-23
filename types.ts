@@ -14,6 +14,7 @@ export interface User {
   name: string;
   email: string;
   role: 'hiker' | 'guide' | 'admin';
+  isGuest?: boolean;
 }
 
 export interface Route {
@@ -127,4 +128,14 @@ export interface ComposedRoute extends Route {
   total_elevation_gain: number;
   difficulty_level: number;
   segments?: RouteSegment[];
+}
+
+export interface ReminderInfo {
+  id: string;
+  route_id: string;
+  type: string;
+  name: string;
+  description: string;
+  ai_prompt: string;
+  coordinates: [number, number];
 }

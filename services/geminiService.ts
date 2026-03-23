@@ -5,15 +5,15 @@ let aiClient: GoogleGenAI | null = null;
 // Initialize the client lazily or when key is available
 const getClient = (): GoogleGenAI => {
   if (!aiClient) {
+    // Note: Netlify standard environment variables need to be prefixed with VITE_ to be visible to the frontend code
     const apiKey = 
-      process.env.API_KEY || 
-      process.env.GEMINI_API_KEY || 
       import.meta.env.VITE_GEMINI_API_KEY || 
-      import.meta.env.VITE_API_KEY;
+      import.meta.env.VITE_API_KEY ||
+      (typeof process !== 'undefined' ? (process.env.GEMINI_API_KEY || process.env.API_KEY) : null);
 
     if (!apiKey) {
-      console.warn("API Key is missing. Please check your .env.local file.");
-      console.warn("Expected variables: GEMINI_API_KEY, VITE_GEMINI_API_KEY, or VITE_API_KEY");
+      console.warn("⚠️ [GeminiService] API Key is missing! AI features will be disabled.");
+      console.warn("👉 To fix this on Netlify: Add 'VITE_GEMINI_API_KEY' in Site Configuration -> Environment variables.");
       throw new Error("API Key missing");
     }
     aiClient = new GoogleGenAI({ apiKey });
@@ -32,7 +32,12 @@ export const generateHikingAdvice = async (
   }
 ): Promise<string> => {
   try {
-    const ai = getClient();
+    let ai;
+    try {
+      ai = getClient();
+    } catch (e) {
+      return "⚠️ AI Guide is currently in offline mode (API Key missing). Please check Netlify environment variables.";
+    }
     
     // System instruction to act as a hiking guide
     const systemInstruction = `You are HikePal AI, an expert hiking guide for Hong Kong trails. 
@@ -81,7 +86,13 @@ export const generateRoutesWithAI = async (
   userCondition: string
 ): Promise<any[]> => {
   try {
-    const ai = getClient();
+    let ai;
+    try {
+      ai = getClient();
+    } catch (e) {
+      console.warn("Falling back to local route generation (API Key missing)");
+      return []; // Return empty to trigger local DB fallback in segmentRoutingService
+    }
     
     // 🆕 如果没有 segments，生成默认推荐路线
     if (!segments || segments.length === 0) {
@@ -245,7 +256,12 @@ export const rankRoutesWithAI = async (
   userCondition: string
 ): Promise<any[]> => {
   try {
-    const ai = getClient();
+    let ai;
+    try {
+      ai = getClient();
+    } catch (e) {
+      return []; // Fallback to local scoring
+    }
     
     // 简化 routes 数据，只包含关键信息
     const routesInfo = routes.map(r => ({
@@ -317,7 +333,12 @@ export const generateRouteHighlights = async (
   reminders: any[]
 ): Promise<string> => {
   try {
-    const ai = getClient();
+    let ai;
+    try {
+      ai = getClient();
+    } catch (e) {
+      return "Scenic views and fresh air along the trail.";
+    }
     
     const prompt = `You are a professional hiking guide. Based on the trail information and points of interest below, generate 3-5 high-quality "Route Highlights".
     Each highlight should be a short, punchy sentence (max 15 words) with an appropriate emoji.

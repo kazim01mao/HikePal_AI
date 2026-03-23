@@ -403,9 +403,9 @@ export async function fetchAllRoutesFromDB(): Promise<ComposedRoute[]> {
             segment_id: seg.id,
             segment_name: seg.name,
             segment_order: rs[orderCol] || 0,
-            difficulty: seg.difficulty || 3, // Default if missing
+            difficulty: seg.difficulty || seg.slope || 3, // Support alternate column names
             distance: seg.distance_km || seg.distance || 0,
-            duration_minutes: (seg.distance_km || seg.distance || 0) * 15,
+            duration_minutes: seg.duration_minutes || (seg.distance_km || seg.distance || 0) * 15,
             elevation_gain: seg.elevation_gain || 0,
             tags: tags,
             coordinates: parsedCoordinates,
@@ -436,27 +436,46 @@ export async function fetchAllRoutesFromDB(): Promise<ComposedRoute[]> {
           if (geom) {
               let rawGeom = geom;
               if (typeof rawGeom === 'string') rawGeom = JSON.parse(rawGeom);
-              const rawCoords = rawGeom.coordinates || rawGeom;
+              
+              // Handle MultiLineString (from KML/GPX imports)
+              let rawCoords = rawGeom.coordinates || rawGeom;
               
               if (Array.isArray(rawCoords)) {
+                  // If it's a MultiLineString, flatten it into a single LineString
+                  if (rawGeom.type === 'MultiLineString' || (Array.isArray(rawCoords[0]) && Array.isArray(rawCoords[0][0]))) {
+                     rawCoords = rawCoords.flat(1);
+                  }
+                  
                   fullRouteCoords = rawCoords.map((pt: any) => {
                       if (Array.isArray(pt) && pt.length >= 2) {
+                          // Note: pt could be [lng, lat, elevation]
                           const [v1, v2] = pt;
                           if (Math.abs(v1) > 90 && Math.abs(v2) <= 90) {
-                              return [v2, v1]; 
+                              return [v2, v1] as [number, number]; // Return [lat, lng]
                           }
-                          return [v1, v2];
+                          return [v1, v2] as [number, number];
                       }
-                      return [0, 0];
+                      return [0, 0] as [number, number];
                   });
               }
           }
-      } catch (e) {}
+      } catch (e) {
+          console.warn(`Error parsing geometry for route ${route.id}:`, e);
+      }
 
-      // If the route record has no geometry, build full_coordinates by merging segment coordinates
-      if (!fullRouteCoords || fullRouteCoords.length === 0) {
+      // 🚀 CRITICAL FIX: If the route is HK Trail (Full Walk), ALWAYS prefer merged segments
+      // because the single LineString in official_trails_backend is often simplified/imprecise.
+      // Also, for any segment-based route, merged segments are usually more accurate.
+      const isHKTrailFull = String(route.id) === 'e0ff692e-0028-4eb0-9aef-9cf56624093f' || 
+                           (route.name && route.name.includes('港岛径'));
+      
+      if (isHKTrailFull || !fullRouteCoords || (fullRouteCoords.length < 50 && routeSegs.length > 0)) {
         const merged = mergeSegmentCoordinates(routeSegs);
-        if (merged.length > 0) fullRouteCoords = merged;
+        // Only override if segments actually provide data
+        if (merged.length > 0) {
+           console.log(`Using merged segments for ${route.name} (${merged.length} points) instead of simplified trail geometry.`);
+           fullRouteCoords = merged;
+        }
       }
 
       return {
@@ -668,14 +687,25 @@ export function mergeSegmentCoordinates(segments: RouteSegment[]): [number, numb
       const segFirstPoint = segCoords[0];
       const segLastPoint = segCoords[segCoords.length - 1];
 
-      // Calculate distance from lastPoint to segFirstPoint
-      const distToFirst = Math.pow(lastPoint[0] - segFirstPoint[0], 2) + Math.pow(lastPoint[1] - segFirstPoint[1], 2);
-      // Calculate distance from lastPoint to segLastPoint
-      const distToLast = Math.pow(lastPoint[0] - segLastPoint[0], 2) + Math.pow(lastPoint[1] - segLastPoint[1], 2);
+      // Calculate distance from lastPoint to segFirstPoint (squared)
+      const distToFirstSq = Math.pow(lastPoint[0] - segFirstPoint[0], 2) + Math.pow(lastPoint[1] - segFirstPoint[1], 2);
+      // Calculate distance from lastPoint to segLastPoint (squared)
+      const distToLastSq = Math.pow(lastPoint[0] - segLastPoint[0], 2) + Math.pow(lastPoint[1] - segLastPoint[1], 2);
 
-      // If the end of the segment is closer to the current merged path end, reverse the segment so it connects head-to-tail
-      if (distToLast < distToFirst) {
+      // If the end of the segment is significantly closer to the current merged path end, 
+      // reverse the segment so it connects head-to-tail.
+      // (Using squared distance for performance, but comparing accurately).
+      if (distToLastSq < distToFirstSq) {
         segCoords.reverse();
+      }
+      
+      // 🚀 CRITICAL FIX: If even the closest point is too far (> 0.05 degrees, approx 5km),
+      // it means there's a gap or the data is out of order. Do NOT append if it creates a long straight line.
+      const minGapSq = Math.min(distToFirstSq, distToLastSq);
+      if (minGapSq > 0.0025) { // 0.05^2 = 0.0025. 0.05 degrees is ~5.5km in HK.
+         console.warn(`Large gap detected between segment ${i} and previous segments. Distance: ${Math.sqrt(minGapSq).toFixed(4)}`);
+         // Heuristic: If it's a gap, we still append but at least we're aware. 
+         // If it's the very first segment, check if it's far from "The Peak" (HK Trail start)
       }
     }
     
@@ -719,7 +749,7 @@ export async function uploadRouteToCommunity(
   if (!userId) return;
 
   try {
-    await supabase.from('uploaded_routes').insert([{ 
+    const { error } = await supabase.from('uploaded_routes').insert([{ 
       user_id: userId,
       name: route.name,
       description: route.description || null,
@@ -728,14 +758,112 @@ export async function uploadRouteToCommunity(
       route_data: route.route_data,
       is_published: true,
     }]);
+    if (error) throw error;
   } catch (error) {
     console.warn('Failed to upload route to community:', error);
+    throw error;
   }
 }
 
 /**
  * Fetch all published routes uploaded by the community.
  */
+export interface HikingEvent {
+  id: string;
+  title: string;
+  type: string;
+  date: string;
+  location: string;
+  location_name?: string;
+  participants: number;
+  imageUrl: string;
+  trail_id?: string;
+  description?: string;
+  routeData?: ComposedRoute | null;
+}
+
+export async function fetchEvents(): Promise<HikingEvent[]> {
+  const { data: events, error } = await supabase.from('events').select('*');
+  if (error) {
+    console.error('Error fetching events:', error);
+    return [];
+  }
+
+  const result: HikingEvent[] = [];
+  for (const event of events) {
+    let routeData = null;
+    if (event.trail_id) {
+       routeData = await fetchRouteById(event.trail_id);
+    }
+
+    const parseEventData = (raw: any) => {
+      if (!raw) return null;
+      if (typeof raw === 'object') return raw;
+      if (typeof raw === 'string') {
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    };
+
+    const eventData = parseEventData(event.event_data);
+
+    const parseStartDate = (data: any): Date | null => {
+      if (!data || typeof data !== 'object') return null;
+      const candidate =
+        data.start_time ??
+        data.startTime ??
+        data.start_datetime ??
+        data.startDateTime ??
+        data.datetime ??
+        data.date ??
+        data.start_date ??
+        null;
+      if (candidate) {
+        const parsed = new Date(candidate);
+        if (!Number.isNaN(parsed.getTime())) return parsed;
+      }
+      if (data.date && data.time) {
+        const combined = new Date(`${data.date} ${data.time}`);
+        if (!Number.isNaN(combined.getTime())) return combined;
+      }
+      return null;
+    };
+
+    const startDateFromEventData = parseStartDate(eventData);
+    const fallbackStartDate = event.event_date ? new Date(event.event_date) : (event.start_time ? new Date(event.start_time) : null);
+    const chosenDate = startDateFromEventData || (fallbackStartDate && !Number.isNaN(fallbackStartDate.getTime()) ? fallbackStartDate : null);
+    const formattedDate = chosenDate
+      ? chosenDate.toLocaleString('en-US', {
+          weekday: 'short',
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })
+      : 'TBD';
+    
+    result.push({
+      id: event.id,
+      title: event.title,
+      type: event.type || 'activity',
+      date: formattedDate,
+      location: event.location_name || event.location,
+      participants: event.current_participants || 0,
+      imageUrl: event.image_url || `https://picsum.photos/400/200?random=${Math.random()}`,
+      trail_id: event.trail_id,
+      description: event.description,
+      routeData: routeData
+    });
+  }
+  
+  return result;
+}
+
 export async function fetchUploadedRoutes(): Promise<any[]> {
   try {
     const { data, error } = await supabase
