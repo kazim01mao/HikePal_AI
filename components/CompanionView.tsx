@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Message, Route, Teammate, Track, Waypoint, User } from '../types';
 import { generateHikingAdvice } from '../services/geminiService';
 import { uploadRouteToCommunity, mergeSegmentCoordinates } from '../services/segmentRoutingService';
-import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, Upload, Compass, MapPin, Thermometer, Wind, Phone, Bell, ShieldAlert, ArrowLeft, Star, Activity, Clock, X, Edit3, Check, ChevronRight, History as HistoryIcon, Sparkles } from 'lucide-react';
+import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, Upload, Compass, MapPin, Thermometer, Wind, Phone, Bell, ShieldAlert, ArrowLeft, Star, Activity, Clock, X, Edit3, Check, ChevronRight, History as HistoryIcon, Sparkles, MoveDiagonal2 } from 'lucide-react';
 import { supabase } from '../utils/supabaseClient';
 import { DRAGONS_BACK_COORDINATES } from '../utils/trailData';
 import { useHikeStore, RouteData } from '../store/hikeStore';
@@ -155,8 +155,12 @@ interface CompanionViewProps {
 const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSaveTrack, userId, sessionId, onBack, teamId, isLeader }) => {
   // --- States ---
   const [cardPos, setCardPos] = useState({ x: 16, y: 100 });
+  const [cardSize, setCardSize] = useState({ w: 280, h: 360 });
   const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
   const dragStartRef = useRef({ x: 0, y: 0, cardX: 0, cardY: 0 });
+  const resizeStartRef = useRef({ x: 0, y: 0, w: 280, h: 360 });
+  const cardRef = useRef<HTMLDivElement>(null);
 
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -842,7 +846,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const handleCardDragStart = (e: React.PointerEvent) => {
+    e.preventDefault();
     setIsDragging(true);
     dragStartRef.current = {
       x: e.clientX,
@@ -852,8 +857,30 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     };
   };
 
+  const handleResizeStart = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = cardRef.current?.getBoundingClientRect();
+    const startW = rect?.width ?? cardSize.w;
+    const startH = rect?.height ?? cardSize.h;
+    resizeStartRef.current = { x: e.clientX, y: e.clientY, w: startW, h: startH };
+    setIsResizing(true);
+  };
+
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
+      if (isResizing) {
+        const dx = e.clientX - resizeStartRef.current.x;
+        const dy = e.clientY - resizeStartRef.current.y;
+        const minW = 220;
+        const minH = 220;
+        const maxW = Math.min(window.innerWidth - 32, 380);
+        const maxH = Math.min(window.innerHeight * 0.7, 560);
+        const nextW = Math.max(minW, Math.min(resizeStartRef.current.w + dx, maxW));
+        const nextH = Math.max(minH, Math.min(resizeStartRef.current.h + dy, maxH));
+        setCardSize({ w: nextW, h: nextH });
+        return;
+      }
       if (!isDragging) return;
       const dx = e.clientX - dragStartRef.current.x;
       const dy = e.clientY - dragStartRef.current.y;
@@ -862,17 +889,31 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         y: dragStartRef.current.cardY + dy
       });
     };
-    const handleMouseUp = () => setIsDragging(false);
+    const handlePointerUp = () => {
+      setIsDragging(false);
+      setIsResizing(false);
+    };
 
-    if (isDragging) {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
+    if (isDragging || isResizing) {
+      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('pointerup', handlePointerUp);
     }
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [isDragging]);
+  }, [isDragging, isResizing]);
+
+  useEffect(() => {
+    if (!cardRef.current) return;
+    const rect = cardRef.current.getBoundingClientRect();
+    if (rect.width && rect.height) {
+      setCardSize(prev => ({
+        w: prev.w || rect.width,
+        h: prev.h || rect.height
+      }));
+    }
+  }, [activeRoute, hasStartedHike]);
 
   const handleAddNote = async () => {
     if (!noteContent.trim()) return;
@@ -975,7 +1016,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   };
 
   return (
-    <div className="flex flex-col h-full bg-gray-50 relative overflow-hidden">
+    <div className="flex flex-col h-[100svh] min-h-[100svh] bg-gray-50 relative overflow-hidden">
       <MovementModeModal />
       {/* Toast Notification */}
       {toast && (
@@ -1075,7 +1116,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       )}
 
       {/* Map Section */}
-      <div className={`relative transition-all duration-300 ${panelMode === 'map' ? 'h-[68%]' : 'h-[38%]'}`}>
+      <div className={`relative transition-all duration-300 ${panelMode === 'map' ? 'h-[60%] md:h-[65%] lg:h-[68%]' : 'h-[38%]'}`}>
         <div ref={mapContainerRef} className="absolute inset-0 bg-gray-200 z-0" />
         
         {!activeRoute && (
@@ -1120,10 +1161,14 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
             style={{ left: cardPos.x, top: cardPos.y }}
             className="absolute z-[600] pointer-events-auto"
           >
-             <div className="bg-white/95 backdrop-blur-md rounded-3xl p-5 shadow-2xl border border-white/40 max-w-[280px]">
+             <div
+               ref={cardRef}
+               style={{ width: cardSize.w, height: cardSize.h }}
+               className="bg-white/95 backdrop-blur-md rounded-3xl p-5 shadow-2xl border border-white/40 overflow-auto relative"
+             >
                 <div 
-                   onMouseDown={handleMouseDown}
-                   className="cursor-move flex flex-col items-center mb-4 bg-gray-50/50 -m-5 p-4 rounded-t-3xl border-b border-gray-100"
+                   onPointerDown={handleCardDragStart}
+                   className="cursor-move flex flex-col items-center mb-4 bg-gray-50/50 -m-5 p-4 rounded-t-3xl border-b border-gray-100 touch-none"
                 >
                    <div className="w-8 h-1 bg-gray-300 rounded-full mb-3"></div>
                    <h2 className="text-base font-black text-gray-900 leading-tight text-center">{activeRoute.name}</h2>
@@ -1210,6 +1255,14 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                         <button onClick={handleStartRecording} className="w-full bg-gradient-to-r from-hike-green to-emerald-600 text-white py-2.5 rounded-xl font-bold text-xs shadow-md active:scale-95 transition-all flex items-center justify-center gap-2"><Navigation size={14}/> Start Hike</button>
                       )}
                    </div>
+                </div>
+
+                <div
+                  onPointerDown={handleResizeStart}
+                  className="absolute right-2 bottom-2 h-6 w-6 rounded-full border border-gray-200 bg-white/90 shadow-sm cursor-se-resize touch-none flex items-center justify-center text-gray-500"
+                  title="Resize"
+                >
+                  <MoveDiagonal2 size={12} />
                 </div>
              </div>
           </div>
@@ -1354,7 +1407,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       )}
 
       {/* Chat Section */}
-      <div className="flex-1 bg-white flex flex-col pb-0 overflow-hidden relative">
+      <div className="flex-1 min-h-0 bg-white flex flex-col pb-0 overflow-hidden relative">
          {/* Drag Handle to collapse */}
          {panelMode === 'chat' && (
             <div 
@@ -1371,7 +1424,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                <span className={isRefreshingTeam ? 'animate-pulse' : ''}>Team ({teamId ? actualTeamSize : (activeRoute ? 1 : 0)})</span>
             </button>
          </div>
-         <div className="flex-1 overflow-y-auto p-4 bg-gray-50 select-text">
+         <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4 bg-gray-50 select-text">
             {chatType === 'team' ? (
                <div className="space-y-4 select-text">
                   <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 select-text">
@@ -1424,14 +1477,14 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
          </div>
          {!isReviewMode && (
            panelMode === 'chat' ? (
-             <div className="p-3 bg-white border-t flex items-center gap-2">
+             <div className="p-3 bg-white border-t flex items-center gap-2 pb-[env(safe-area-inset-bottom)]">
                 <input value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} placeholder="Ask AI..." className="flex-1 bg-gray-100 rounded-full px-4 py-2 text-sm outline-none" />
                 <button onClick={() => handleSendMessage()} className="p-2 bg-hike-green text-white rounded-full shadow-sm"><Send size={18} /></button>
              </div>
            ) : (
              <button
                onClick={() => { setChatType('ai'); setPanelMode('chat'); }}
-               className="mx-4 mb-3 h-8 rounded-full bg-white/95 border border-gray-200 shadow-sm text-gray-400 text-xs flex items-center justify-center gap-2 hover:text-gray-600 transition-colors"
+               className="mx-3 sm:mx-4 mb-[calc(0.5rem+env(safe-area-inset-bottom))] sm:mb-[calc(0.75rem+env(safe-area-inset-bottom))] h-7 sm:h-8 rounded-full bg-white/95 border border-gray-200 shadow-sm text-gray-400 text-[11px] sm:text-xs flex items-center justify-center gap-2 hover:text-gray-600 transition-colors"
              >
                <span className="w-2 h-2 bg-hike-green rounded-full"></span>
                Tap to ask AI
