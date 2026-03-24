@@ -1,25 +1,59 @@
-import { GoogleGenAI } from "@google/genai";
-
-let aiClient: GoogleGenAI | null = null;
-
-// Initialize the client lazily or when key is available
-const getClient = (): GoogleGenAI => {
-  if (!aiClient) {
-    // Note: Netlify standard environment variables need to be prefixed with VITE_ to be visible to the frontend code
-    const apiKey = 
-      import.meta.env.VITE_GEMINI_API_KEY || 
-      import.meta.env.VITE_API_KEY ||
-      (typeof process !== 'undefined' ? (process.env.GEMINI_API_KEY || process.env.API_KEY) : null);
-
-    if (!apiKey) {
-      console.warn("⚠️ [GeminiService] API Key is missing! AI features will be disabled.");
-      console.warn("👉 To fix this on Netlify: Add 'VITE_GEMINI_API_KEY' in Site Configuration -> Environment variables.");
-      throw new Error("API Key missing");
-    }
-    aiClient = new GoogleGenAI({ apiKey });
-  }
-  return aiClient;
+type QwenChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
 };
+
+type QwenChatResponse = {
+  choices?: Array<{
+    message?: { content?: string };
+  }>;
+};
+
+const QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const DEFAULT_QWEN_MODEL =
+  import.meta.env.VITE_QWEN_MODEL ||
+  (typeof process !== "undefined" ? process.env.QWEN_MODEL : null) ||
+  "qwen-plus";
+
+const getQwenApiKey = (): string => {
+  const apiKey =
+    (typeof process !== "undefined" ? process.env.QWEN_API_KEY : null) ||
+    import.meta.env.VITE_QWEN_API_KEY ||
+    import.meta.env.VITE_API_KEY;
+
+  if (!apiKey) {
+    console.warn("⚠️ [QwenService] API Key is missing! AI features will be disabled.");
+    console.warn("👉 To fix this: set 'QWEN_API_KEY' (server) or 'VITE_QWEN_API_KEY' (client).");
+    throw new Error("API Key missing");
+  }
+  return apiKey;
+};
+
+/**
+ * 通用 Qwen 请求函数（OpenAI 兼容格式）
+ */
+async function qwenRequest<T>(path: string, body: Record<string, any>): Promise<T> {
+  const apiKey = getQwenApiKey();
+  const response = await fetch(`${QWEN_BASE_URL}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => "");
+    throw new Error(`Qwen API Error (${response.status}): ${errText || response.statusText}`);
+  }
+
+  return (await response.json()) as T;
+}
+
+function extractFirstMessageText(resp: QwenChatResponse): string {
+  return resp?.choices?.[0]?.message?.content || "";
+}
 
 export const generateHikingAdvice = async (
   userMessage: string,
@@ -32,13 +66,12 @@ export const generateHikingAdvice = async (
   }
 ): Promise<string> => {
   try {
-    let ai;
     try {
-      ai = getClient();
+      getQwenApiKey();
     } catch (e) {
-      return "⚠️ AI Guide is currently in offline mode (API Key missing). Please check Netlify environment variables.";
+      return "⚠️ AI Guide is currently in offline mode (API Key missing). Please check environment variables.";
     }
-    
+
     // System instruction to act as a hiking guide
     const systemInstruction = `You are HikePal AI, an expert hiking guide for Hong Kong trails. 
     Current User Context:
@@ -53,17 +86,18 @@ export const generateHikingAdvice = async (
     If not covered there, be general but helpful.
     Keep responses short (under 100 words) as the user is currently hiking.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: userMessage,
-      config: {
-        systemInstruction: systemInstruction,
-      },
+    const response = await qwenRequest<QwenChatResponse>("/chat/completions", {
+      model: DEFAULT_QWEN_MODEL,
+      messages: [
+        { role: "system", content: systemInstruction },
+        { role: "user", content: userMessage },
+      ],
+      temperature: 0.3,
     });
 
-    return response.text || "Sorry, I couldn't get a clear signal on that.";
+    return extractFirstMessageText(response) || "Sorry, I couldn't get a clear signal on that.";
   } catch (error) {
-    console.error("Gemini API Error:", error);
+    console.error("Qwen API Error:", error);
     return "I'm having trouble connecting to the network. Please check your signal.";
   }
 };
@@ -86,9 +120,8 @@ export const generateRoutesWithAI = async (
   userCondition: string
 ): Promise<any[]> => {
   try {
-    let ai;
     try {
-      ai = getClient();
+      getQwenApiKey();
     } catch (e) {
       console.warn("Falling back to local route generation (API Key missing)");
       return []; // Return empty to trigger local DB fallback in segmentRoutingService
@@ -187,20 +220,18 @@ Return ONLY a valid JSON array, no other text:
   }
 ]`;
 
-    // 【第四步：调用 Gemini API】
-    console.log('📡 Calling Gemini API to generate routes...');
+    // 【第四步：调用 Qwen API】
+    console.log('📡 Calling Qwen API to generate routes...');
     
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt, // 直接传入提示词
-      config: {
-        temperature: 0.7, // 创意度 (0-1)，值越高结果越随机
-        maxOutputTokens: 3000, // 增加输出长度限制
-      },
+    const response = await qwenRequest<QwenChatResponse>("/chat/completions", {
+      model: DEFAULT_QWEN_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.7, // 创意度 (0-1)，值越高结果越随机
+      max_tokens: 3000, // 增加输出长度限制
     });
 
-    const responseText = response.text || '[]';
-    console.log('✅ Gemini API Response:', responseText);
+    const responseText = extractFirstMessageText(response) || '[]';
+    console.log('✅ Qwen API Response:', responseText);
     
     // 【第五步：解析 AI 响应】
     // AI返回的是JSON字符串，需要解析
@@ -241,7 +272,7 @@ Return ONLY a valid JSON array, no other text:
       return [];
     }
   } catch (error) {
-    console.error('🚨 Error calling Gemini API:', error);
+    console.error('🚨 Error calling Qwen API:', error);
     return [];
   }
 };
@@ -256,9 +287,8 @@ export const rankRoutesWithAI = async (
   userCondition: string
 ): Promise<any[]> => {
   try {
-    let ai;
     try {
-      ai = getClient();
+      getQwenApiKey();
     } catch (e) {
       return []; // Fallback to local scoring
     }
@@ -295,15 +325,13 @@ Return ONLY a valid JSON array of objects with the following structure:
   }
 ]`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-      },
+    const response = await qwenRequest<QwenChatResponse>("/chat/completions", {
+      model: DEFAULT_QWEN_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.2,
     });
 
-    const text = response.text;
+    const text = extractFirstMessageText(response);
     if (!text) return [];
     
     try {
@@ -315,11 +343,11 @@ Return ONLY a valid JSON array of objects with the following structure:
       const jsonStr = text.substring(jsonStart, jsonEnd);
       return JSON.parse(jsonStr);
     } catch (e) {
-      console.error("Failed to parse Gemini response as JSON:", e);
+      console.error("Failed to parse Qwen response as JSON:", e);
       return [];
     }
   } catch (error) {
-    console.error("Gemini AI Ranking Error:", error);
+    console.error("Qwen AI Ranking Error:", error);
     return [];
   }
 };
@@ -333,9 +361,8 @@ export const generateRouteHighlights = async (
   reminders: any[]
 ): Promise<string> => {
   try {
-    let ai;
     try {
-      ai = getClient();
+      getQwenApiKey();
     } catch (e) {
       return "Scenic views and fresh air along the trail.";
     }
@@ -351,17 +378,32 @@ export const generateRouteHighlights = async (
     Format the output as a simple bulleted list. 
     Focus on variety: mention scenery, facilities (like toilets/water), and safety/difficulty if relevant.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
-        temperature: 0.7,
-      },
+    const response = await qwenRequest<QwenChatResponse>("/chat/completions", {
+      model: DEFAULT_QWEN_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.7,
     });
 
-    return response.text || "Scenic views and fresh air along the trail.";
+    return extractFirstMessageText(response) || "Scenic views and fresh air along the trail.";
   } catch (error) {
-    console.error("Gemini Highlights Error:", error);
+    console.error("Qwen Highlights Error:", error);
     return "Beautiful trail with local points of interest.";
+  }
+};
+
+/**
+ * 兼容旧调用：简单 prompt -> 文本输出
+ */
+export const callGeminiAPI = async (prompt: string): Promise<string> => {
+  try {
+    const response = await qwenRequest<QwenChatResponse>("/chat/completions", {
+      model: DEFAULT_QWEN_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.3,
+    });
+    return extractFirstMessageText(response) || "";
+  } catch (error) {
+    console.error("Qwen API Error (callGeminiAPI):", error);
+    throw error;
   }
 };
