@@ -1,5 +1,5 @@
-import { GoogleGenAI } from "@google/genai";
 import { findMatchingRoutes, UserHikingPreferences, RouteMatchScore } from './segmentRoutingService';
+import { callGeminiAPI } from './geminiService';
 
 export interface MemberPreference {
   userId: string;
@@ -18,19 +18,6 @@ export interface GroupRouteResult {
   synthesizedPreferences: UserHikingPreferences;
 }
 
-const getAiClient = (): GoogleGenAI => {
-  const apiKey = 
-    process.env.API_KEY || 
-    process.env.GEMINI_API_KEY || 
-    import.meta.env.VITE_GEMINI_API_KEY || 
-    import.meta.env.VITE_API_KEY;
-
-  if (!apiKey) {
-    throw new Error("API Key missing");
-  }
-  return new GoogleGenAI({ apiKey });
-};
-
 /**
  * 使用 Gemini 分析团队所有成员的偏好，综合出统一的团队偏好
  */
@@ -43,8 +30,6 @@ export const synthesizeGroupPreferences = async (
   }
 
   try {
-    const ai = getAiClient();
-
     const membersList = members
       .map((m, i) => `Member ${i + 1} (${m.userName}): Mood=${m.mood}, Difficulty=${m.difficulty}, Looking for="${m.condition}"`)
       .join('\n');
@@ -68,16 +53,7 @@ Return ONLY valid JSON (no markdown code blocks):
   "group_condition": "A short summary of what the group is looking for (e.g., 'scenic views, good for photos, not too steep')"
 }`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
-        temperature: 0.7,
-        maxOutputTokens: 500,
-      },
-    });
-
-    const responseText = response.text || '{}';
+    const responseText = await callGeminiAPI(prompt);
     
     // Parse JSON from response (handle potential markdown wrapping)
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
