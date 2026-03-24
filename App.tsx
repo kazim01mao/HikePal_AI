@@ -480,6 +480,11 @@ const App: React.FC = () => {
   // --- 逻辑判断：如果未登录显示登录页 ---
   if (loading) return <div className="h-screen flex items-center justify-center">Loading...</div>;
 
+  const teamLinkMemberId =
+    !user && teamIdFromUrl && typeof window !== 'undefined'
+      ? localStorage.getItem(`hikepal_team_member_id_${teamIdFromUrl}`) || ''
+      : '';
+
   const renderNav = () => (
     <nav className="fixed bottom-0 w-full bg-white border-t flex justify-around py-3 z-[9999] app-bottom-nav shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
       <button 
@@ -589,7 +594,7 @@ const App: React.FC = () => {
                     setGuestCompletedTrack(track);
                  }
               }} 
-              userId={user?.id || `guest_${Date.now()}`}
+              userId={user?.id || teamLinkMemberId || `guest_${teamIdFromUrl}`}
               sessionId={sessionId}
               teamId={teamIdFromUrl}
               isLeader={user?.id ? (myGroupHikes.find(h => h.id === teamIdFromUrl)?.isOrganizer || false) : false}

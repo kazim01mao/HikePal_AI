@@ -1,6 +1,7 @@
 import React from 'react';
 
 export interface PreferenceFormData {
+  nickname: string;
   mood: string;
   difficulty: 'easy' | 'medium' | 'hard';
   condition: string;
@@ -50,6 +51,20 @@ const PreferenceFormPanel: React.FC<PreferenceFormPanelProps> = ({
       )}
 
       <div className="space-y-5">
+        {/* 昵称输入 */}
+        <div className="space-y-2">
+          <label className="block text-xs text-gray-600 font-bold uppercase tracking-wider">
+            👤 Your Nickname *
+          </label>
+          <input
+            type="text"
+            value={data.nickname}
+            onChange={(e) => onChange({ ...data, nickname: e.target.value })}
+            placeholder="e.g., Alex"
+            className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-hike-green bg-gray-50/50 focus:bg-white transition-colors text-sm"
+          />
+          <p className="text-[10px] text-gray-500">This name will be shown on the map avatar.</p>
+        </div>
         {/* 心情选择 */}
         <div className="space-y-3">
           <label className="block text-xs text-gray-600 font-bold uppercase tracking-wider">

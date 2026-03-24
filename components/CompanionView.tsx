@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Message, Route, Teammate, Track, Waypoint, User } from '../types';
-import { generateHikingAdvice } from '../services/geminiService';
+import { generateHikingAdvice, generateReminderReply } from '../services/geminiService';
 import { uploadRouteToCommunity, mergeSegmentCoordinates } from '../services/segmentRoutingService';
 import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, Upload, Compass, MapPin, Thermometer, Wind, Phone, Bell, ShieldAlert, ArrowLeft, Star, Activity, Clock, X, Edit3, Check, ChevronRight, History as HistoryIcon, Sparkles, MoveDiagonal2 } from 'lucide-react';
 import { supabase } from '../utils/supabaseClient';
@@ -212,6 +212,81 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const timerRef = useRef<any>(null);
   const isReviewMode = !!(activeRoute as any)?.isReview;
 
+  const getTeamMemberNameStorageKey = (id: string) => `hikepal_team_member_name_${id}`;
+
+  const getMemberDisplayName = (member?: any) => {
+    if (!member) return 'U';
+    return (member.user_name || 'U').trim() || 'U';
+  };
+
+  const getStoredSoloNickname = () => {
+    if (typeof window === 'undefined') return '';
+    return localStorage.getItem('hikepal_solo_nickname') || localStorage.getItem('hikepal_nickname') || '';
+  };
+
+  const getStoredGroupNickname = () => {
+    if (typeof window === 'undefined') return '';
+    if (teamId) {
+      const perTeam = localStorage.getItem(getTeamMemberNameStorageKey(teamId)) || '';
+      if (perTeam.trim()) return perTeam.trim();
+    }
+    return localStorage.getItem('hikepal_group_nickname') || '';
+  };
+
+  const getSelfDisplayName = () => {
+    if (teamId) {
+      const me = teamMembers.find(m => m.user_id === userId);
+      const name = me?.user_name?.trim();
+      if (name) return name;
+      const storedGroup = getStoredGroupNickname().trim();
+      if (storedGroup) return storedGroup;
+      return 'Me';
+    }
+    const stored = getStoredSoloNickname();
+    if (stored && stored.trim()) return stored.trim();
+    return (
+      user?.user_metadata?.full_name ||
+      user?.user_metadata?.username ||
+      user?.user_metadata?.name ||
+      user?.email ||
+      'Me'
+    );
+  };
+
+  const syncTeamLocation = async (lat: number, lng: number) => {
+    if (!teamId) return;
+    const displayName = getSelfDisplayName().trim();
+    const basePayload: Record<string, any> = { last_lat: lat, last_lng: lng, last_seen_at: new Date().toISOString() };
+    if (displayName) {
+      basePayload.user_name = displayName;
+    }
+
+    try {
+      const { data: updatedRows, error: updateError } = await supabase
+        .from('team_members')
+        .update(basePayload)
+        .eq('team_id', teamId)
+        .eq('user_id', userId)
+        .select('id');
+
+      if (updateError) throw updateError;
+      if (updatedRows && updatedRows.length > 0) return;
+
+      const { error: upsertError } = await supabase.from('team_members').upsert(
+        {
+          team_id: teamId,
+          user_id: userId,
+          role: 'member',
+          ...basePayload
+        },
+        { onConflict: 'team_id,user_id' }
+      );
+      if (upsertError) throw upsertError;
+    } catch (err) {
+      console.warn('Failed to sync team location:', err);
+    }
+  };
+
   // Handle auto-trigger for reminders prompt
   useEffect(() => {
     hikeModeRef.current = hikeMode;
@@ -325,6 +400,47 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     }
   }, [teamId]);
 
+  useEffect(() => {
+    if (!teamId) return;
+    const channel = supabase
+      .channel(`team_members_live_${teamId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'team_members',
+          filter: `team_id=eq.${teamId}`,
+        },
+        (payload) => {
+          setTeamMembers(prev => {
+            const eventType = payload.eventType;
+            if (eventType === 'DELETE') {
+              const removed = payload.old as any;
+              return prev.filter(m => m.id !== removed?.id && m.user_id !== removed?.user_id);
+            }
+            const nextMember = payload.new as any;
+            const idx = prev.findIndex(m => m.id === nextMember.id || m.user_id === nextMember.user_id);
+            if (idx >= 0) {
+              const updated = [...prev];
+              updated[idx] = { ...updated[idx], ...nextMember };
+              return updated;
+            }
+            return [...prev, nextMember];
+          });
+        }
+      )
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR') {
+          console.error(`Realtime channel error: team_members_live_${teamId}`);
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [teamId]);
+
   // Generate AI Highlights when route changes
   useEffect(() => {
     const fetchHighlights = async () => {
@@ -355,27 +471,67 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   useEffect(() => {
     if (hikeMode === 'idle') return;
     if (!alertsEnabled || isReviewMode || !userPos) return;
+    const activeRouteCoords = activeRoute?.coordinates || [];
+    if (!activeRoute || activeRouteCoords.length === 0) return;
+
     const relatedReminders = reminderInfo
       .map(r => ({ r, coords: getCoords(r) }))
-      .filter(item => item.coords);
+      .filter(item => {
+        if (!item.coords) return false;
+        return isPointNearRoute(item.coords[0], item.coords[1], activeRouteCoords, 300);
+      });
     
     // Use a consistent proximity threshold for both Live and Manual modes
     const threshold = 300;
 
-    relatedReminders.forEach(({ r, coords }) => {
-      if (!coords) return;
-      const id = r?.id ?? `${r?.name ?? 'reminder'}-${coords[0].toFixed(6)}-${coords[1].toFixed(6)}`;
-      if (alertedItemsRef.current.has(String(id))) return;
-      if (getDistanceFromLatLonInM(userPos[0], userPos[1], coords[0], coords[1]) <= threshold) {
-          setMessages(prev => [...prev, { id: `reminder-${id}`, sender: 'ai', text: r.ai_prompt || `Near ${r.name}`, timestamp: new Date() }]);
-          alertedItemsRef.current.add(String(id));
-          
-          // Trigger a re-render of messages or a toast?
-          setToast({ message: `Reminder: ${r.name}`, type: 'info' });
-          setTimeout(() => setToast(null), 3000);
+    const notifyNearbyReminders = async () => {
+      const me = teamMembers.find(m => m.user_id === userId);
+      const weatherText = riskStats?.condition
+        ? `${riskStats.condition}, ${riskStats.temp ?? 'N/A'}C, humidity ${riskStats.humidity ?? 'N/A'}%`
+        : 'not available';
+
+      for (const { r, coords } of relatedReminders) {
+        if (!coords) continue;
+        const id = r?.id ?? `${r?.name ?? 'reminder'}-${coords[0].toFixed(6)}-${coords[1].toFixed(6)}`;
+        if (alertedItemsRef.current.has(String(id))) continue;
+
+        const distance = getDistanceFromLatLonInM(userPos[0], userPos[1], coords[0], coords[1]);
+        if (distance > threshold) continue;
+
+        // Mark first to prevent repeated triggers while waiting for AI.
+        alertedItemsRef.current.add(String(id));
+
+        const replyText = await generateReminderReply({
+          reminderName: r?.name || 'Trail reminder',
+          reminderCategory: r?.category || r?.type,
+          reminderType: r?.type,
+          riskLevel: r?.risk_level,
+          distanceMeters: distance,
+          internalPrompt: r?.ai_prompt,
+          context: {
+            location: `${userPos[0].toFixed(4)}, ${userPos[1].toFixed(4)}`,
+            route: activeRoute?.name || 'Unknown',
+            hikeMode,
+            teammates: teamMembers.map(m => m.user_name).filter(Boolean),
+            userName: getSelfDisplayName(),
+            userMood: me?.user_mood || '',
+            userDifficulty: me?.user_difficulty || '',
+            userCondition: me?.user_condition || '',
+            weather: weatherText
+          }
+        });
+
+        setMessages(prev => [
+          ...prev,
+          { id: `reminder-${id}`, sender: 'ai', text: replyText, timestamp: new Date() }
+        ]);
+        setToast({ message: `Reminder: ${r.name}`, type: 'info' });
+        setTimeout(() => setToast(null), 3000);
       }
-    });
-  }, [userPos, reminderInfo, activeRoute, alertsEnabled, isReviewMode, hikeMode]);
+    };
+
+    notifyNearbyReminders();
+  }, [userPos, reminderInfo, activeRoute, alertsEnabled, isReviewMode, hikeMode, teamMembers, userId, riskStats]);
 
   useEffect(() => {
     if (hikeMode === 'live' || hikeMode === 'scrubbing') {
@@ -414,16 +570,18 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         }
         
         // Sync to database so teammates can see
-        if (Date.now() - lastUploadRef.current > 10000 && teamId) { 
+        if (Date.now() - lastUploadRef.current > 3000 && teamId) { 
            lastUploadRef.current = Date.now();
            // In a real app we'd update a real-time table. Updating team_members last_lat/last_lng
-           await supabase.from('team_members')
-             .update({ last_lat: lat, last_lng: lng })
-             .eq('team_id', teamId)
-             .eq('user_id', userId);
+           await syncTeamLocation(lat, lng);
              
            // Also log to locations for history
-           await supabase.from('locations').insert({ session_id: sessionId, user_id: userId, latitude: lat, longitude: lng });
+           const { error: locationsInsertError } = await supabase
+             .from('locations')
+             .insert({ session_id: sessionId, team_id: teamId, user_id: userId, latitude: lat, longitude: lng });
+           if (locationsInsertError) {
+             console.warn('Failed to insert location history:', locationsInsertError);
+           }
         }
       },
       (err) => console.error(err), { 
@@ -483,7 +641,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         // Render Reminder Info (Facilities & Risks)
 
         if (!isReviewMode && activeRoute) {
-          const userChar = (user?.user_metadata?.full_name || user?.user_metadata?.username || user?.user_metadata?.name || user?.email || 'Me').charAt(0).toUpperCase();
+          const userChar = getSelfDisplayName().charAt(0).toUpperCase();
           const userIcon = L.divIcon({ 
             html: `<div style="background-color: #2563EB; color: white; width: 28px; height: 28px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); cursor: pointer;">${userChar}</div>`,
             className: '',
@@ -492,7 +650,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
           });
           userMarkerRef.current = L.marker(initialView, { 
             icon: userIcon, 
-            zIndexOffset: 9999, // Ensure Avatar is always on top of reminders (which use 2000)
+            zIndexOffset: 12000, // Ensure Avatar is always on top of all map objects
             draggable: hikeMode === 'scrubbing' // Enable draggable when scrubbing
           }).addTo(map);
 
@@ -576,6 +734,21 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     }
     if (recordedPolylineRef.current && isReviewMode) { /* Review mode line is static */ }
   }, [userPos, activeRoute, isReviewMode, reminderInfo]);
+
+  useEffect(() => {
+    if (!teamId || !userMarkerRef.current) return;
+    const L = (window as any).L;
+    if (!L) return;
+    const displayName = getSelfDisplayName();
+    const userChar = displayName.charAt(0).toUpperCase();
+    const userIcon = L.divIcon({ 
+      html: `<div style="background-color: #2563EB; color: white; width: 28px; height: 28px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); cursor: pointer;">${userChar}</div>`,
+      className: '',
+      iconSize: [28, 28],
+      iconAnchor: [14, 14]
+    });
+    userMarkerRef.current.setIcon(userIcon);
+  }, [teamMembers, teamId, userId]);
 
   useEffect(() => {
     return () => {
@@ -736,7 +909,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       }
 
       if (typeof teammateLat === 'number' && typeof teammateLng === 'number') {
-        const char = (member.user_name || 'U').charAt(0).toUpperCase();
+        const displayName = getMemberDisplayName(member);
+        const char = displayName.charAt(0).toUpperCase();
         const icon = L.divIcon({
           html: `<div style="background-color: #EA580C; color: white; width: 28px; height: 28px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${char}</div>`,
           className: '',
@@ -746,12 +920,23 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
         if (teammateMarkersRef.current[member.user_id]) {
           teammateMarkersRef.current[member.user_id].setLatLng([teammateLat, teammateLng]);
+          teammateMarkersRef.current[member.user_id].setIcon(icon);
+          teammateMarkersRef.current[member.user_id].setZIndexOffset(11000);
+          teammateMarkersRef.current[member.user_id].bindPopup(displayName);
         } else {
-          teammateMarkersRef.current[member.user_id] = L.marker([teammateLat, teammateLng], { icon }).addTo(map).bindPopup(member.user_name);
+          teammateMarkersRef.current[member.user_id] = L.marker([teammateLat, teammateLng], { icon, zIndexOffset: 11000 }).addTo(map).bindPopup(displayName);
         }
       }
     });
   }, [teamMembers, userId, isReviewMode]);
+
+  useEffect(() => {
+    if (!teamId || !userPos || !isRecording || isReviewMode || hikeMode !== 'scrubbing') return;
+    if (Date.now() - lastUploadRef.current < 1000) return;
+    lastUploadRef.current = Date.now();
+    const [lat, lng] = userPos;
+    syncTeamLocation(lat, lng);
+  }, [teamId, userPos, isRecording, isReviewMode, hikeMode, userId]);
 
   // --- Handlers ---
   const handleStartRecording = () => {

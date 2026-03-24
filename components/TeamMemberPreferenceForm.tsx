@@ -22,6 +22,18 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
   onBack,
   onStartHike,
 }) => {
+  const formatUnknownError = (error: any) => {
+    const message =
+      error?.message ||
+      error?.error_description ||
+      error?.details ||
+      error?.hint ||
+      'Failed to submit preferences, please try again.';
+    const code = error?.code ? ` [${error.code}]` : '';
+    const details = error?.details ? ` Details: ${error.details}` : '';
+    return `${message}${code}${details}`.trim();
+  };
+
   // 表单状态
   const [memberEmail, setMemberEmail] = useState('');  // 🆕 邮箱（用于识别队员）
   const [userName, setUserName] = useState('');
@@ -49,6 +61,13 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
       setCurrentUser(user);
       if (user?.email) {
         setMemberEmail(user.email);  // 自动填充登录用户的邮箱
+      }
+      if (typeof window !== 'undefined') {
+        const storedTeamName = localStorage.getItem(`hikepal_team_member_name_${teamId}`);
+        const storedGroupName = localStorage.getItem('hikepal_group_nickname');
+        if (!userName && (storedTeamName || storedGroupName)) {
+          setUserName((storedTeamName || storedGroupName || '').trim());
+        }
       }
       console.log('Current user:', user);
     };
@@ -92,7 +111,7 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
     e.preventDefault();
 
     if (!userName.trim()) {
-      setSubmitError('Please enter your name');
+      setSubmitError('Please enter your nickname');
       return;
     }
 
@@ -241,23 +260,31 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
       setSubmitSuccess(true);
       console.log('✅ Preferences submitted!', memberRecord);
 
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(`hikepal_team_member_id_${teamId}`, userId);
+        localStorage.setItem(`hikepal_team_member_name_${teamId}`, userName.trim());
+        localStorage.setItem('hikepal_group_nickname', userName.trim());
+      }
+      onSubmitSuccess?.();
+
       // 立即显示队伍详情，避免闪烁和重复提交
       // 🆕 通过状态改变而不是重新挂载来减少闪烁感
       setShowTeamDetails(true);
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Error submitting preferences:', error);
-      const errorMsg = error instanceof Error ? error.message : 'Failed to submit preferences, please try again.';
+      const errorMsg = formatUnknownError(error);
       setSubmitError(errorMsg);
       
       // 记录详细日志用于调试
-      if (error instanceof Error) {
-        console.error('📋 Error details:', {
-          message: error.message,
-          stack: error.stack,
-          teamId,
-          email: memberEmail
-        });
-      }
+      console.error('📋 Error details:', {
+        message: error?.message,
+        code: error?.code,
+        details: error?.details,
+        hint: error?.hint,
+        stack: error?.stack,
+        teamId,
+        email: memberEmail
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -337,16 +364,16 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
             </p>
           </div>
 
-          {/* 名字输入 */}
+          {/* 昵称输入 */}
           <div className="space-y-2">
             <label className="block text-sm font-bold text-gray-900">
-              👤 Your Name *
+              👤 Your Nickname *
             </label>
             <input
               type="text"
               value={userName}
               onChange={(e) => setUserName(e.target.value)}
-              placeholder="e.g., John"
+              placeholder="e.g., Alex"
               className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-hike-green"
               required
             />
