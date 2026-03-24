@@ -5,6 +5,9 @@ import { uploadRouteToCommunity, mergeSegmentCoordinates } from '../services/seg
 import { Mic, Send, Navigation, Camera, AlertCircle, Map as MapIcon, Users, Droplet, Tent, Cigarette, Info, MessageSquare, Play, Square, Save, Upload, Compass, MapPin, Thermometer, Wind, Phone, Bell, ShieldAlert, ArrowLeft, Star, Activity, Clock, X, Edit3, Check, ChevronRight, History as HistoryIcon, Sparkles } from 'lucide-react';
 import { supabase } from '../utils/supabaseClient';
 import { DRAGONS_BACK_COORDINATES } from '../utils/trailData';
+import { useHikeStore, RouteData } from '../store/hikeStore';
+import { usePathScrubbing } from '../hooks/usePathScrubbing';
+import { MovementModeModal } from './MovementModeModal';
 
 // --- Utility Functions ---
 function getDistanceFromLatLonInM(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -70,14 +73,38 @@ function parseGeographyPoint(geoObj: any): [number, number] | null {
   return null;
 }
 
+const normalizeLatLng = (a: number, b: number): [number, number] | null => {
+  if (Number.isFinite(a) && Number.isFinite(b)) {
+    const absA = Math.abs(a);
+    const absB = Math.abs(b);
+    if (absA <= 90 && absB <= 180) return [a, b]; // [lat, lng]
+    if (absB <= 90 && absA <= 180) return [b, a]; // [lng, lat] -> swap
+  }
+  return null;
+};
+
 const getCoords = (r: any): [number, number] | null => {
   // Handle GeoJSON format if present
   if (r.geojson) {
     let g = r.geojson;
     if (typeof g === 'string') { try { g = JSON.parse(g); } catch(e) {} }
     if (g && g.type === 'Point' && Array.isArray(g.coordinates)) {
-       return [g.coordinates[1], g.coordinates[0]];
+       return normalizeLatLng(g.coordinates[1], g.coordinates[0]);
     }
+  }
+  // Handle plain array coordinates
+  if (Array.isArray(r.coordinates) && r.coordinates.length >= 2) {
+    const [a, b] = r.coordinates;
+    if (typeof a === 'number' && typeof b === 'number') {
+      return normalizeLatLng(a, b);
+    }
+  }
+  // Handle lat/lng fields
+  if (typeof r.lat === 'number' && typeof r.lng === 'number') {
+    return normalizeLatLng(r.lat, r.lng);
+  }
+  if (typeof r.latitude === 'number' && typeof r.longitude === 'number') {
+    return normalizeLatLng(r.latitude, r.longitude);
   }
   // Handle Hex/EWKB Point heuristic for standard HK coordinates
   if (typeof r.coordinates === 'string' && r.coordinates.startsWith('0101')) {
@@ -86,12 +113,30 @@ const getCoords = (r: any): [number, number] | null => {
   
   // Fallback to parseGeographyPoint for legacy JSON coordinates
   if (!r.coordinates) return null;
-  if (r.coordinates.type === 'Point' && Array.isArray(r.coordinates.coordinates)) return [r.coordinates.coordinates[1], r.coordinates.coordinates[0]];
+  if (r.coordinates.type === 'Point' && Array.isArray(r.coordinates.coordinates)) {
+    return normalizeLatLng(r.coordinates.coordinates[1], r.coordinates.coordinates[0]);
+  }
   if (typeof r.coordinates === 'string') {
     try {
       const parsed = JSON.parse(r.coordinates);
-      if (parsed.type === 'Point' && Array.isArray(parsed.coordinates)) return [parsed.coordinates[1], parsed.coordinates[0]];
+      if (parsed.type === 'Point' && Array.isArray(parsed.coordinates)) {
+        return normalizeLatLng(parsed.coordinates[1], parsed.coordinates[0]);
+      }
     } catch(e) {}
+    // WKT like "POINT (114.17 22.25)" or "POINT(114.17 22.25)"
+    const wktMatch = r.coordinates.match(/POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/i);
+    if (wktMatch) {
+      const lng = Number(wktMatch[1]);
+      const lat = Number(wktMatch[2]);
+      return normalizeLatLng(lat, lng);
+    }
+    // Comma-separated "lat,lng" or "lng,lat"
+    const csvMatch = r.coordinates.match(/^\s*([-\d.]+)\s*,\s*([-\d.]+)\s*$/);
+    if (csvMatch) {
+      const a = Number(csvMatch[1]);
+      const b = Number(csvMatch[2]);
+      return normalizeLatLng(a, b);
+    }
   }
   return null;
 };
@@ -118,7 +163,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0);
-  const [mode, setMode] = useState<'map' | 'chat'>('map'); 
+  const [panelMode, setPanelMode] = useState<'map' | 'chat'>('map'); 
   const [chatType, setChatType] = useState<'ai' | 'team'>('ai');
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [trackName, setTrackName] = useState(activeRoute?.name || 'My Hike');
@@ -148,6 +193,13 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [toast, setToast] = useState<{message: string, type: 'success' | 'info'} | null>(null);
   
   const mapContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Zustand store & Custom hook
+  const { hikeMode, setMode, setModalOpen, updateLocation, routeData, setRouteData, currentLocation, reset: resetHikeStore } = useHikeStore();
+  const hikeModeRef = useRef(hikeMode);
+  const routeDataRef = useRef<RouteData | null>(routeData);
+  const { handleScrubbing } = usePathScrubbing();
+
   const mapInstanceRef = useRef<any>(null);
   const userMarkerRef = useRef<any>(null);
   const teammateMarkersRef = useRef<{ [id: string]: any }>({});
@@ -157,6 +209,11 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const isReviewMode = !!(activeRoute as any)?.isReview;
 
   // Handle auto-trigger for reminders prompt
+  useEffect(() => {
+    hikeModeRef.current = hikeMode;
+    routeDataRef.current = routeData;
+  }, [hikeMode, routeData]);
+
   useEffect(() => {
     if (activeRoute && (activeRoute as any).trigger_reminders_prompt) {
        // Clear the flag so it only triggers once
@@ -226,7 +283,18 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
           duration: activeRoute.duration,
           difficulty: activeRoute.difficulty,
           coordinates: recordedPath,
-          waypoints: waypoints
+          waypoints: Array.from(alertedItemsRef.current).map(id => {
+             const item = reminderInfo.find(r => r.id === id);
+             const coords = getCoords(item);
+             return { 
+               id: item?.id || id,
+               lat: coords ? coords[0] : 0, 
+               lng: coords ? coords[1] : 0, 
+               note: item?.name || 'Reminder', 
+               type: 'reminder',
+               timestamp: new Date()
+             } as unknown as Waypoint;
+          }) 
         },
       });
       setShowUploadModal(false);
@@ -281,22 +349,35 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   }, [activeRoute, reminderInfo]);
 
   useEffect(() => {
-    if (!isRecording || !alertsEnabled || !activeRoute || !activeRoute.coordinates || isReviewMode || !userPos) return;
-    const relatedReminders = reminderInfo.filter(r => {
-      const coords = getCoords(r);
-      return coords && isPointNearRoute(coords[0], coords[1], activeRoute.coordinates || [], 200);
-    });
-    relatedReminders.forEach(item => {
-      if (alertedItemsRef.current.has(item.id)) return;
-      const coords = getCoords(item);
-      if (coords) {
-        if (getDistanceFromLatLonInM(userPos[0], userPos[1], coords[0], coords[1]) < 100) {
-          setMessages(prev => [...prev, { id: `reminder-${item.id}`, sender: 'ai', text: item.ai_prompt || `Near ${item.name}`, timestamp: new Date() }]);
-          alertedItemsRef.current.add(item.id);
-        }
+    if (hikeMode === 'idle') return;
+    if (!alertsEnabled || isReviewMode || !userPos) return;
+    const relatedReminders = reminderInfo
+      .map(r => ({ r, coords: getCoords(r) }))
+      .filter(item => item.coords);
+    
+    // Use a consistent proximity threshold for both Live and Manual modes
+    const threshold = 300;
+
+    relatedReminders.forEach(({ r, coords }) => {
+      if (!coords) return;
+      const id = r?.id ?? `${r?.name ?? 'reminder'}-${coords[0].toFixed(6)}-${coords[1].toFixed(6)}`;
+      if (alertedItemsRef.current.has(String(id))) return;
+      if (getDistanceFromLatLonInM(userPos[0], userPos[1], coords[0], coords[1]) <= threshold) {
+          setMessages(prev => [...prev, { id: `reminder-${id}`, sender: 'ai', text: r.ai_prompt || `Near ${r.name}`, timestamp: new Date() }]);
+          alertedItemsRef.current.add(String(id));
+          
+          // Trigger a re-render of messages or a toast?
+          setToast({ message: `Reminder: ${r.name}`, type: 'info' });
+          setTimeout(() => setToast(null), 3000);
       }
     });
-  }, [userPos, reminderInfo, activeRoute, isRecording, alertsEnabled, isReviewMode]);
+  }, [userPos, reminderInfo, activeRoute, alertsEnabled, isReviewMode, hikeMode]);
+
+  useEffect(() => {
+    if (hikeMode === 'live' || hikeMode === 'scrubbing') {
+      alertedItemsRef.current.clear();
+    }
+  }, [hikeMode, activeRoute]);
 
   // Initialize userPos to the start of the active route if available
   useEffect(() => {
@@ -309,7 +390,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   }, [activeRoute, isRecording]);
 
   useEffect(() => {
-    if (!isRecording || isReviewMode) return;
+    if (!isRecording || isReviewMode || hikeMode === 'scrubbing') return;
     
     const geoId = navigator.geolocation.watchPosition(
       async (position) => {
@@ -348,7 +429,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       }
     );
     return () => navigator.geolocation.clearWatch(geoId);
-  }, [isRecording, isReviewMode, sessionId, userId, teamId, activeRoute]);
+  }, [isRecording, isReviewMode, sessionId, userId, teamId, activeRoute, hikeMode]);
 
   useEffect(() => {
     const anyWindow = window as any;
@@ -398,14 +479,61 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         // Render Reminder Info (Facilities & Risks)
 
         if (!isReviewMode && activeRoute) {
-          const userChar = (user?.user_metadata?.name || user?.email || 'Me').charAt(0).toUpperCase();
+          const userChar = (user?.user_metadata?.full_name || user?.user_metadata?.username || user?.user_metadata?.name || user?.email || 'Me').charAt(0).toUpperCase();
           const userIcon = L.divIcon({ 
-            html: `<div style="background-color: #2563EB; color: white; width: 28px; height: 28px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${userChar}</div>`,
+            html: `<div style="background-color: #2563EB; color: white; width: 28px; height: 28px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); cursor: pointer;">${userChar}</div>`,
             className: '',
             iconSize: [28, 28],
             iconAnchor: [14, 14]
           });
-          userMarkerRef.current = L.marker(initialView, { icon: userIcon, zIndexOffset: 1000 }).addTo(map);
+          userMarkerRef.current = L.marker(initialView, { 
+            icon: userIcon, 
+            zIndexOffset: 9999, // Ensure Avatar is always on top of reminders (which use 2000)
+            draggable: hikeMode === 'scrubbing' // Enable draggable when scrubbing
+          }).addTo(map);
+
+          // Handle Dragging Events for Path Scrubbing
+          userMarkerRef.current.on('dragstart', () => {
+             if (hikeModeRef.current === 'scrubbing') {
+               map.dragging.disable();
+             }
+          });
+
+          userMarkerRef.current.on('drag', (e: any) => {
+            const currentRoute = routeDataRef.current;
+            if (hikeModeRef.current === 'scrubbing' && currentRoute) {
+              const rawPos = e.latlng;
+              const rawLngLat = { lng: rawPos.lng, lat: rawPos.lat };
+              
+              // 1. Calculate Snapped Point
+              const snapped = handleScrubbing(rawLngLat, currentRoute);
+              
+              if (snapped) {
+                // 2. FORCE Snapping: Physically pull the marker back to the route
+                e.target.setLatLng([snapped.lat, snapped.lng]);
+                
+                // 3. Sync States
+                setUserPos([snapped.lat, snapped.lng]);
+                updateLocation(snapped);
+              }
+            }
+          });
+
+          userMarkerRef.current.on('dragend', (e: any) => {
+            map.dragging.enable();
+            const currentRoute = routeDataRef.current;
+            if (hikeModeRef.current === 'scrubbing' && currentRoute) {
+              const rawPos = e.target._latlng;
+              const rawLngLat = { lng: rawPos.lng, lat: rawPos.lat };
+              const snapped = handleScrubbing(rawLngLat, currentRoute);
+              if (snapped) {
+                e.target.setLatLng([snapped.lat, snapped.lng]);
+                setUserPos([snapped.lat, snapped.lng]);
+                updateLocation(snapped);
+              }
+            }
+          });
+
         } else if (safeCoords.length > 0 && isReviewMode) {
           recordedPolylineRef.current.setLatLngs(safeCoords);
           ((activeRoute as any).historyWaypoints || []).forEach((wp: any) => {
@@ -427,7 +555,20 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         }, 500);
     }
     if (userMarkerRef.current && userPos && isValidPoint(userPos)) {
-      userMarkerRef.current.setLatLng(userPos);
+      if (!userMarkerRef.current.dragging || !userMarkerRef.current.dragging._draggable || !userMarkerRef.current.dragging._draggable._moving) {
+        userMarkerRef.current.setLatLng(userPos);
+      }
+      
+      // Update draggable state dynamically
+      if (hikeMode === 'scrubbing') {
+         if (!userMarkerRef.current.dragging?.enabled()) {
+            userMarkerRef.current.dragging?.enable();
+         }
+      } else {
+         if (userMarkerRef.current.dragging?.enabled()) {
+            userMarkerRef.current.dragging?.disable();
+         }
+      }
     }
     if (recordedPolylineRef.current && isReviewMode) { /* Review mode line is static */ }
   }, [userPos, activeRoute, isReviewMode, reminderInfo]);
@@ -451,7 +592,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         mapInstanceRef.current.invalidateSize();
       }, 300);
     }
-  }, [mode]);
+  }, [panelMode, activeRoute]);
 
   // Handle Reminder Markers (Facilities & Risks)
   useEffect(() => {
@@ -610,14 +751,47 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
   // --- Handlers ---
   const handleStartRecording = () => {
-    setIsRecording(true);
-    setHasStartedHike(true);
-    timerRef.current = setInterval(() => setElapsedTime(prev => prev + 1), 1000);
-    
-    // Show toast notification
-    setToast({ message: 'Started recording your hike!', type: 'success' });
-    setTimeout(() => setToast(null), 3000);
+    if (activeRoute && activeRoute.coordinates) {
+      // Ensure coordinates are correctly structured for turf
+      const validCoords = activeRoute.coordinates
+         .filter(c => Array.isArray(c) && c.length >= 2)
+         .map(c => [c[1], c[0]]); // Leaflet [lat, lng] -> Turf [lng, lat]
+      
+      if (validCoords.length > 0) {
+        setRouteData({
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: validCoords
+          }
+        } as RouteData);
+      }
+    }
+    setModalOpen(true);
   };
+
+  useEffect(() => {
+    if (hikeMode === 'live' || hikeMode === 'scrubbing') {
+      setIsRecording(true);
+      setHasStartedHike(true);
+      
+      // Initial Positioning: Jump to start point for scrubbing mode
+      if (hikeMode === 'scrubbing' && activeRoute?.coordinates && activeRoute.coordinates.length > 0) {
+        const startPt = activeRoute.coordinates[0];
+        setUserPos(startPt);
+        updateLocation({ lng: startPt[1], lat: startPt[0] });
+        if (mapInstanceRef.current) {
+          mapInstanceRef.current.panTo(startPt);
+        }
+      }
+
+      if (!timerRef.current) {
+        timerRef.current = setInterval(() => setElapsedTime(prev => prev + 1), 1000);
+      }
+      setToast({ message: `Started ${hikeMode === 'scrubbing' ? 'virtual' : 'live'} hike!`, type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+    }
+  }, [hikeMode, activeRoute]);
 
   const handleSendMessage = async (text?: string) => {
     const finalMsg = text || inputText;
@@ -802,6 +976,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
   return (
     <div className="flex flex-col h-full bg-gray-50 relative overflow-hidden">
+      <MovementModeModal />
       {/* Toast Notification */}
       {toast && (
         <div className="absolute top-10 left-1/2 -translate-x-1/2 z-[3000] animate-fade-in-up">
@@ -821,7 +996,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
             setTrackName(`Hike ${new Date().toLocaleDateString()}`);
             handleStartRecording();
           }}
-          className={`absolute ${mode === 'chat' ? 'bottom-[64%]' : 'bottom-[35%]'} left-4 z-[500] bg-hike-green text-white px-6 py-4 rounded-[24px] shadow-2xl active:scale-95 transition-all flex items-center gap-3 border-2 border-white/30 animate-fade-in`}
+          className={`absolute ${panelMode === 'chat' ? 'bottom-[64%]' : 'bottom-[35%]'} left-4 z-[500] bg-hike-green text-white px-6 py-4 rounded-[24px] shadow-2xl active:scale-95 transition-all flex items-center gap-3 border-2 border-white/30 animate-fade-in`}
         >
           <Play size={20} fill="currentColor" />
           <span className="text-sm font-black tracking-tight">DIRECT RECORD</span>
@@ -859,7 +1034,18 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                             distance: (recordedPath.length * 0.005).toFixed(2) + 'km', 
                             difficulty: activeRoute?.difficulty || 0, 
                             coordinates: recordedPath, 
-                            waypoints: waypoints 
+                            waypoints: Array.from(alertedItemsRef.current).map(id => {
+                              const item = reminderInfo.find(r => r.id === id);
+                              const coords = getCoords(item);
+                              return { 
+                                id: item?.id || id,
+                                lat: coords ? coords[0] : 0, 
+                                lng: coords ? coords[1] : 0, 
+                                note: item?.name || 'Reminder', 
+                                type: 'reminder',
+                                timestamp: new Date()
+                              } as unknown as Waypoint;
+                            }) 
                           }); 
                           setShowSaveDialog(false); 
                           if(onBack) onBack(); 
@@ -889,7 +1075,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       )}
 
       {/* Map Section */}
-      <div className={`relative transition-all duration-300 ${mode === 'map' ? 'h-[68%]' : 'h-[38%]'}`}>
+      <div className={`relative transition-all duration-300 ${panelMode === 'map' ? 'h-[68%]' : 'h-[38%]'}`}>
         <div ref={mapContainerRef} className="absolute inset-0 bg-gray-200 z-0" />
         
         {!activeRoute && (
@@ -1031,22 +1217,27 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
         {/* Side Controls */}
         {!isReviewMode && (
-          <div className={`absolute right-4 z-[400] flex flex-col origin-top-right ${mode === 'chat' ? 'top-4 gap-2 scale-90' : 'top-24 gap-3'}`}>
-             <button onClick={() => setShowSOS(true)} className={`bg-red-600 text-white rounded-full shadow-2xl font-black border-2 border-white/30 ${mode === 'chat' ? 'p-3 text-[10px]' : 'p-4 text-[11px]'}`}>SOS</button>
-             {isLeader && <button onClick={() => setShowSaveDialog(true)} className={`bg-blue-600 text-white rounded-full shadow-lg border border-white/30 ${mode === 'chat' ? 'p-3' : 'p-3.5'}`}><Upload size={mode === 'chat' ? 18 : 20}/></button>}
-             <button onClick={() => setShowAddNote(true)} className={`bg-white rounded-full shadow-lg text-orange-500 border border-white/30 ${mode === 'chat' ? 'p-3' : 'p-3.5'}`}><Star size={mode === 'chat' ? 18 : 20}/></button>
+          <div className={`absolute right-4 z-[400] flex flex-col origin-top-right ${panelMode === 'chat' ? 'top-4 gap-2 scale-90' : 'top-24 gap-3'}`}>
+             <button onClick={() => setShowSOS(true)} className={`bg-red-600 text-white rounded-full shadow-2xl font-black border-2 border-white/30 ${panelMode === 'chat' ? 'p-3 text-[10px]' : 'p-4 text-[11px]'}`}>SOS</button>
+             {isLeader && <button onClick={() => setShowSaveDialog(true)} className={`bg-blue-600 text-white rounded-full shadow-lg border border-white/30 ${panelMode === 'chat' ? 'p-3' : 'p-3.5'}`}><Upload size={panelMode === 'chat' ? 18 : 20}/></button>}
+             <button onClick={() => setShowAddNote(true)} className={`bg-white rounded-full shadow-lg text-orange-500 border border-white/30 ${panelMode === 'chat' ? 'p-3' : 'p-3.5'}`}><Star size={panelMode === 'chat' ? 18 : 20}/></button>
              <button
                onClick={() => {
                  if (!hasStartedHike) return;
                  setIsRecording(false);
                  setShowSaveDialog(true);
                }}
-               className={`${mode === 'chat' ? 'p-3' : 'p-3.5'} rounded-full shadow-lg border border-white/30 ${hasStartedHike ? 'bg-green-600 text-white' : 'bg-green-200 text-white/70 cursor-not-allowed'}`}
+               className={`${panelMode === 'chat' ? 'p-3' : 'p-3.5'} rounded-full shadow-lg border border-white/30 ${hasStartedHike ? 'bg-green-600 text-white' : 'bg-green-200 text-white/70 cursor-not-allowed'}`}
                disabled={!hasStartedHike}
              >
-               <Check size={mode === 'chat' ? 18 : 20}/>
+               <Check size={panelMode === 'chat' ? 18 : 20}/>
              </button>
-             <button onClick={() => { if(window.confirm('Quit?')) onBack && onBack(); }} className={`bg-white rounded-full shadow-lg text-gray-500 border border-white/30 ${mode === 'chat' ? 'p-3' : 'p-3.5'}`}><X size={mode === 'chat' ? 18 : 20}/></button>
+             <button onClick={() => { 
+               if(window.confirm('Quit?')) {
+                 resetHikeStore();
+                 onBack && onBack(); 
+               }
+             }} className={`bg-white rounded-full shadow-lg text-gray-500 border border-white/30 ${panelMode === 'chat' ? 'p-3' : 'p-3.5'}`}><X size={panelMode === 'chat' ? 18 : 20}/></button>
           </div>
         )}
         
@@ -1163,11 +1354,11 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       )}
 
       {/* Chat Section */}
-      <div className="flex-1 bg-white flex flex-col pb-20 overflow-hidden relative">
+      <div className="flex-1 bg-white flex flex-col pb-0 overflow-hidden relative">
          {/* Drag Handle to collapse */}
-         {mode === 'chat' && (
+         {panelMode === 'chat' && (
             <div 
-               onClick={() => setMode('map')} 
+               onClick={() => setPanelMode('map')} 
                className="w-full h-6 flex items-center justify-center cursor-pointer bg-gray-50 border-b border-gray-200"
                title="Collapse Panel"
             >
@@ -1175,8 +1366,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
             </div>
          )}
          <div className="flex border-b border-gray-100">
-            <button onClick={() => {setChatType('ai'); setMode('chat');}} className={`flex-1 py-4 text-sm font-bold ${chatType === 'ai' ? 'text-hike-green border-b-2 border-hike-green' : 'text-gray-400'}`}>AI Guide</button>
-            <button onClick={() => {setChatType('team'); setMode('chat');}} className={`flex-1 py-4 text-sm font-bold ${chatType === 'team' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400'}`}>
+            <button onClick={() => {setChatType('ai'); setPanelMode('chat');}} className={`flex-1 py-4 text-sm font-bold ${chatType === 'ai' ? 'text-hike-green border-b-2 border-hike-green' : 'text-gray-400'}`}>AI Guide</button>
+            <button onClick={() => {setChatType('team'); setPanelMode('chat');}} className={`flex-1 py-4 text-sm font-bold ${chatType === 'team' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400'}`}>
                <span className={isRefreshingTeam ? 'animate-pulse' : ''}>Team ({teamId ? actualTeamSize : (activeRoute ? 1 : 0)})</span>
             </button>
          </div>
@@ -1201,7 +1392,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                </div>
             ) : (
                <div className="space-y-4 select-text">
-                  {messages.length < 2 && (
+                  {panelMode === 'chat' && messages.length < 2 && (
                      <div className="grid grid-cols-4 gap-2 mb-4">
                         <button onClick={() => handleSendMessage("Where is water?")} className="flex flex-col items-center bg-white p-2 rounded-xl border shadow-sm"><Droplet size={18} className="text-blue-500 mb-1"/><span className="text-[9px]">Water</span></button>
                         <button onClick={() => handleSendMessage("Rest points?")} className="flex flex-col items-center bg-white p-2 rounded-xl border shadow-sm"><Tent size={18} className="text-green-500 mb-1"/><span className="text-[9px]">Rest</span></button>
@@ -1209,21 +1400,43 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                         <button onClick={() => handleSendMessage("Trail Info")} className="flex flex-col items-center bg-white p-2 rounded-xl border shadow-sm"><Info size={18} className="text-gray-400 mb-1"/><span className="text-[9px]">Info</span></button>
                      </div>
                   )}
-                  {messages.map((m, i) => (
+                  {(panelMode === 'chat'
+                    ? messages
+                    : (() => {
+                        const aiMessages = messages.filter(m => m.sender === 'ai');
+                        const lastAi = aiMessages[aiMessages.length - 1];
+                        return lastAi ? [lastAi] : [];
+                      })()
+                  ).map((m, i) => (
                     <div key={i} className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'} select-text`}>
-                       <div className={`max-w-[85%] p-3 rounded-2xl text-sm whitespace-pre-wrap select-text ${m.sender === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-white text-gray-800 border rounded-bl-none shadow-sm'}`}>
+                       <div
+                         className={`max-w-[85%] p-3 rounded-2xl text-sm whitespace-pre-wrap select-text ${m.sender === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-white text-gray-800 border rounded-bl-none shadow-sm'} ${panelMode === 'map' ? 'line-clamp-3' : ''}`}
+                       >
                          {renderMarkdown(m.text)}
                        </div>
                     </div>
                   ))}
+                  {panelMode === 'map' && messages.filter(m => m.sender === 'ai').length === 0 && (
+                    <div className="text-xs text-gray-400">AI Guide is ready.</div>
+                  )}
                </div>
             )}
          </div>
          {!isReviewMode && (
-           <div className="p-3 bg-white border-t flex items-center gap-2">
-              <input value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} placeholder="Ask AI..." className="flex-1 bg-gray-100 rounded-full px-4 py-2 text-sm outline-none" />
-              <button onClick={() => handleSendMessage()} className="p-2 bg-hike-green text-white rounded-full shadow-sm"><Send size={18} /></button>
-           </div>
+           panelMode === 'chat' ? (
+             <div className="p-3 bg-white border-t flex items-center gap-2">
+                <input value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} placeholder="Ask AI..." className="flex-1 bg-gray-100 rounded-full px-4 py-2 text-sm outline-none" />
+                <button onClick={() => handleSendMessage()} className="p-2 bg-hike-green text-white rounded-full shadow-sm"><Send size={18} /></button>
+             </div>
+           ) : (
+             <button
+               onClick={() => { setChatType('ai'); setPanelMode('chat'); }}
+               className="mx-4 mb-3 h-8 rounded-full bg-white/95 border border-gray-200 shadow-sm text-gray-400 text-xs flex items-center justify-center gap-2 hover:text-gray-600 transition-colors"
+             >
+               <span className="w-2 h-2 bg-hike-green rounded-full"></span>
+               Tap to ask AI
+             </button>
+           )
          )}
       </div>
 
