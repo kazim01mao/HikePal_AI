@@ -388,6 +388,10 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
   // Start Hiking / AI Search State
   const [soloPreferences, setSoloPreferences] = useState<PreferenceFormData>({
+    nickname:
+      (typeof window !== 'undefined' &&
+        (localStorage.getItem('hikepal_solo_nickname') || localStorage.getItem('hikepal_nickname'))) ||
+      '',
     mood: '',
     difficulty: '' as any, // 🆕 无默认选项
     condition: '',
@@ -492,6 +496,10 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
   // 🆕 Group Organizer Preferences
   const [groupOrganizerPreferences, setGroupOrganizerPreferences] = useState<PreferenceFormData>({
+    nickname:
+      (typeof window !== 'undefined' &&
+        (localStorage.getItem('hikepal_group_nickname') || localStorage.getItem('hikepal_nickname'))) ||
+      '',
     mood: '',
     difficulty: '' as any, // 🆕 无默认选项
     condition: '',
@@ -506,6 +514,26 @@ const PlanningView: React.FC<PlanningViewProps> = ({
   const reminderMarkersRef = useRef<any[]>([]);
 
   const [reminderInfo, setReminderInfo] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const nickname = soloPreferences.nickname.trim();
+    if (nickname) {
+      localStorage.setItem('hikepal_solo_nickname', nickname);
+    } else {
+      localStorage.removeItem('hikepal_solo_nickname');
+    }
+  }, [soloPreferences.nickname]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const nickname = groupOrganizerPreferences.nickname.trim();
+    if (nickname) {
+      localStorage.setItem('hikepal_group_nickname', nickname);
+    } else {
+      localStorage.removeItem('hikepal_group_nickname');
+    }
+  }, [groupOrganizerPreferences.nickname]);
 
   // Fetch reminder info once for map previews
   useEffect(() => {
@@ -998,6 +1026,10 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
   // AI Route Search Handler
   const handleAIRouteSearch = async () => {
+    if (!soloPreferences.nickname || !soloPreferences.nickname.trim()) {
+      alert('Please enter your nickname');
+      return;
+    }
     if (!soloPreferences.mood || !soloPreferences.difficulty) {
       alert('Please select mood and difficulty level');
       return;
@@ -1789,8 +1821,19 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                           return;
                         }
 
+                        const storedGroupNickname =
+                          (typeof window !== 'undefined' &&
+                            (localStorage.getItem(`hikepal_team_member_name_${teamId}`) ||
+                              localStorage.getItem('hikepal_group_nickname') ||
+                              '')) ||
+                          '';
+
                         const { error } = await supabase.from('team_members').upsert(
-                          { team_id: teamId, user_id: currentUserId },
+                          {
+                            team_id: teamId,
+                            user_id: currentUserId,
+                            user_name: storedGroupNickname.trim() || 'Member',
+                          },
                           { onConflict: 'team_id,user_id' }
                         );
                         if (error) throw error;
@@ -2078,6 +2121,10 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                             onClick={async () => {
                               // Save organizer preferences to team_members
                               try {
+                                if (!groupOrganizerPreferences.nickname || !groupOrganizerPreferences.nickname.trim()) {
+                                  alert('Please enter your nickname');
+                                  return;
+                                }
                                 // Validate required fields
                                 if (!groupOrganizerPreferences.mood) {
                                   alert('Please select your hiking mood');
@@ -2093,7 +2140,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                 // Create stable user ID - use user ID if logged in, otherwise use team ID + "organizer"
                                 const userId = user?.id || `organizer_${createdGroup.id}`;
                                 const userEmail = user?.email || `organizer_${createdGroup.id}@hikepal.local`;
-                                const userName = user?.user_metadata?.name || 'Organizer';
+                                const userName = groupOrganizerPreferences.nickname.trim() || user?.user_metadata?.name || 'Organizer';
 
                                 const userPrefs: UserHikingPreferences = {
                                   mood: groupOrganizerPreferences.mood as any,
@@ -2159,11 +2206,19 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                 console.log('✅ Organizer preferences saved:', data);
                                 alert('✅ Your preferences have been saved!');
                                 setShowOrganizerPreferenceForm(false);
-                              } catch (error) {
+                              } catch (error: any) {
                                 console.error('❌ Exception caught:', error);
-                                const errorMsg = error instanceof Error ? error.message : String(error);
-                                console.error('Full error:', errorMsg);
-                                alert(`Failed to save preferences:\n${errorMsg}\n\nPlease try again.`);
+                                const errorMsg =
+                                  error?.message ||
+                                  error?.error_description ||
+                                  error?.details ||
+                                  error?.hint ||
+                                  'Unknown error';
+                                const errorCode = error?.code ? ` [${error.code}]` : '';
+                                const errorDetail = error?.details ? `\nDetails: ${error.details}` : '';
+                                const errorHint = error?.hint ? `\nHint: ${error.hint}` : '';
+                                console.error('Full error:', { message: errorMsg, code: error?.code, details: error?.details, hint: error?.hint });
+                                alert(`Failed to save preferences${errorCode}:\n${errorMsg}${errorDetail}${errorHint}\n\nPlease try again.`);
                               }
                             }}
                             className="flex-1 bg-hike-green text-white py-3.5 rounded-2xl font-bold shadow-lg active:scale-95 transition-all hover:bg-green-600"

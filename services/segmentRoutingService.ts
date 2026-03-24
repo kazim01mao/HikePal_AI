@@ -80,6 +80,8 @@ export interface RouteMatchScore {
   tags?: string[];
 }
 
+const MAX_SEGMENT_JOIN_GAP_METERS = 250;
+
 // ============================================================================
 // AI 标签匹配引擎
 // ============================================================================
@@ -484,10 +486,10 @@ export async function fetchAllRoutesFromDB(): Promise<ComposedRoute[]> {
         description: route.description,
         region: 'Hong Kong',
         is_segment_based: true,
-        total_distance: totalDistance || 0,
-        total_duration_minutes: totalDuration || 0,
-        total_elevation_gain: route.total_elevation || totalElevation || 0,
-        difficulty_level: 3,
+        total_distance: route.distance_km || route.total_distance || totalDistance || 0,
+        total_duration_minutes: (route.estimated_time_hours ? route.estimated_time_hours * 60 : 0) || route.total_duration_minutes || totalDuration || 0,
+        total_elevation_gain: route.elevation_gain_m || route.total_elevation || totalElevation || 0,
+        difficulty_level: route.difficulty || 3,
         tags: Array.from(allTags),
         segments: routeSegs,
         created_by: 'system',
@@ -590,16 +592,28 @@ export async function findMatchingRoutes(
                         .filter((s: RouteSegment | null) => s !== null);
 
                     if (routeSegments.length === 0) return null;
+                    const normalizedSegments = normalizeSegmentOrderForPath(routeSegments as RouteSegment[]);
+                    if (normalizedSegments.length === 0) return null;
+
+                    const computedDistance = normalizedSegments.reduce((sum, s) => sum + (s.distance || 0), 0);
+                    const computedDuration = normalizedSegments.reduce((sum, s) => sum + (s.duration_minutes || 0), 0);
+                    const computedDifficulty =
+                      normalizedSegments.length > 0
+                        ? Math.round(
+                            normalizedSegments.reduce((sum, s) => sum + (s.difficulty || 3), 0) /
+                              normalizedSegments.length
+                          )
+                        : 3;
 
                     return {
                         routeId: `ai_gen_${Date.now()}_${index}`,
                         routeName: genRoute.name || `Recommended Route ${index + 1}`,
                         matchScore: 95 - (index * 2), // High score for custom generation
                         matchReasons: genRoute.reasons || ['Custom Segment Combination'],
-                        segments: routeSegments,
-                        totalDistance: genRoute.total_distance,
-                        totalDuration: genRoute.total_duration,
-                        difficulty: genRoute.difficulty,
+                        segments: normalizedSegments,
+                        totalDistance: computedDistance || genRoute.total_distance || 0,
+                        totalDuration: computedDuration || genRoute.total_duration || 0,
+                        difficulty: computedDifficulty || genRoute.difficulty || 3,
                         tags: genRoute.tags || []
                     };
                 }).filter((r: RouteMatchScore | null) => r !== null);
@@ -672,44 +686,140 @@ export async function findMatchingRoutes(
   }
 }
 
-// Helper to merge coordinates for display - ensure head-to-tail connection
-export function mergeSegmentCoordinates(segments: RouteSegment[]): [number, number][] {
-  if (!segments || segments.length === 0) return [];
-  
-  let merged: [number, number][] = [];
-  
-  segments.forEach((seg, i) => {
-    let segCoords = [...seg.coordinates];
-    if (segCoords.length === 0) return;
+function distanceSq(a: [number, number], b: [number, number]): number {
+  return Math.pow(a[0] - b[0], 2) + Math.pow(a[1] - b[1], 2);
+}
 
-    if (i > 0 && merged.length > 0) {
-      const lastPoint = merged[merged.length - 1];
-      const segFirstPoint = segCoords[0];
-      const segLastPoint = segCoords[segCoords.length - 1];
+function distanceMeters(a: [number, number], b: [number, number]): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const [lat1, lng1] = a;
+  const [lat2, lng2] = b;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const rLat1 = toRad(lat1);
+  const rLat2 = toRad(lat2);
 
-      // Calculate distance from lastPoint to segFirstPoint (squared)
-      const distToFirstSq = Math.pow(lastPoint[0] - segFirstPoint[0], 2) + Math.pow(lastPoint[1] - segFirstPoint[1], 2);
-      // Calculate distance from lastPoint to segLastPoint (squared)
-      const distToLastSq = Math.pow(lastPoint[0] - segLastPoint[0], 2) + Math.pow(lastPoint[1] - segLastPoint[1], 2);
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLng = Math.sin(dLng / 2);
+  const h =
+    sinDLat * sinDLat +
+    Math.cos(rLat1) * Math.cos(rLat2) * sinDLng * sinDLng;
+  const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
 
-      // If the end of the segment is significantly closer to the current merged path end, 
-      // reverse the segment so it connects head-to-tail.
-      // (Using squared distance for performance, but comparing accurately).
-      if (distToLastSq < distToFirstSq) {
-        segCoords.reverse();
-      }
-      
-      // 🚀 CRITICAL FIX: If even the closest point is too far (> 0.05 degrees, approx 5km),
-      // it means there's a gap or the data is out of order. Do NOT append if it creates a long straight line.
-      const minGapSq = Math.min(distToFirstSq, distToLastSq);
-      if (minGapSq > 0.0025) { // 0.05^2 = 0.0025. 0.05 degrees is ~5.5km in HK.
-         console.warn(`Large gap detected between segment ${i} and previous segments. Distance: ${Math.sqrt(minGapSq).toFixed(4)}`);
-         // Heuristic: If it's a gap, we still append but at least we're aware. 
-         // If it's the very first segment, check if it's far from "The Peak" (HK Trail start)
+  return 6371000 * c;
+}
+
+function orientSegmentTowardsPoint(seg: RouteSegment, target: [number, number]): RouteSegment {
+  const coords = Array.isArray(seg.coordinates) ? [...seg.coordinates] : [];
+  if (coords.length === 0) return { ...seg, coordinates: [] };
+
+  const first = coords[0];
+  const last = coords[coords.length - 1];
+  const shouldReverse = distanceSq(target, last) < distanceSq(target, first);
+
+  return {
+    ...seg,
+    coordinates: shouldReverse ? coords.reverse() : coords,
+  };
+}
+
+function normalizeSegmentOrderForPath(segments: RouteSegment[]): RouteSegment[] {
+  const working = segments
+    .filter((s) => Array.isArray(s.coordinates) && s.coordinates.length > 0)
+    .map((s) => ({ ...s, coordinates: [...s.coordinates] }));
+
+  if (working.length <= 1) {
+    return working.map((s, idx) => ({ ...s, segment_order: idx + 1 }));
+  }
+
+  // Pick the first segment as anchor, then greedily append the nearest next segment endpoint.
+  // This stabilizes AI-generated combinations where segment_ids order is not guaranteed to be connected.
+  const ordered: RouteSegment[] = [working.shift() as RouteSegment];
+
+  while (working.length > 0) {
+    const tail = ordered[ordered.length - 1].coordinates;
+    const tailPoint = tail[tail.length - 1];
+
+    let bestIdx = 0;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (let i = 0; i < working.length; i++) {
+      const coords = working[i].coordinates;
+      const head = coords[0];
+      const end = coords[coords.length - 1];
+      const score = Math.min(distanceSq(tailPoint, head), distanceSq(tailPoint, end));
+      if (score < bestScore) {
+        bestScore = score;
+        bestIdx = i;
       }
     }
-    
-    merged = [...merged, ...segCoords];
+
+    const next = working.splice(bestIdx, 1)[0];
+    ordered.push(orientSegmentTowardsPoint(next, tailPoint));
+  }
+
+  const connectedChain: RouteSegment[] = [ordered[0]];
+
+  for (let i = 1; i < ordered.length; i++) {
+    const prev = connectedChain[connectedChain.length - 1];
+    const prevTail = prev.coordinates[prev.coordinates.length - 1];
+    const nextHead = ordered[i].coordinates[0];
+    const gapMeters = distanceMeters(prevTail, nextHead);
+
+    if (gapMeters <= MAX_SEGMENT_JOIN_GAP_METERS) {
+      connectedChain.push({
+        ...ordered[i],
+        is_connected: true,
+        connection_distance: Math.round(gapMeters),
+      });
+    } else {
+      console.warn(
+        `Skipping disconnected segment ${ordered[i].segment_id}, gap ${Math.round(gapMeters)}m exceeds ${MAX_SEGMENT_JOIN_GAP_METERS}m`
+      );
+    }
+  }
+
+  return connectedChain.map((s, idx) => ({
+    ...s,
+    segment_order: idx + 1,
+    is_connected: idx === 0 ? true : s.is_connected ?? true,
+    connection_distance: idx === 0 ? 0 : s.connection_distance,
+  }));
+}
+
+// Helper to merge coordinates for display - auto-reorder + head-to-tail orientation
+export function mergeSegmentCoordinates(segments: RouteSegment[]): [number, number][] {
+  if (!segments || segments.length === 0) return [];
+
+  const orderedSegments = normalizeSegmentOrderForPath(segments);
+  const merged: [number, number][] = [];
+
+  orderedSegments.forEach((seg, i) => {
+    const segCoords = Array.isArray(seg.coordinates) ? [...seg.coordinates] : [];
+    if (segCoords.length === 0) return;
+
+    if (i === 0 || merged.length === 0) {
+      merged.push(...segCoords);
+      return;
+    }
+
+    const lastPoint = merged[merged.length - 1];
+    const firstPoint = segCoords[0];
+    const gapMeters = distanceMeters(lastPoint, firstPoint);
+
+    if (gapMeters > MAX_SEGMENT_JOIN_GAP_METERS) {
+      console.warn(
+        `Skipping coordinate merge at segment ${i} due to large join gap (${Math.round(gapMeters)}m)`
+      );
+      return;
+    }
+
+    // Drop duplicated join point to avoid artificial spikes / backtracking artifacts.
+    if (distanceSq(lastPoint, firstPoint) < 1e-10) {
+      merged.push(...segCoords.slice(1));
+    } else {
+      merged.push(...segCoords);
+    }
   });
 
   return merged;
