@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { supabase, mockLogin } from '../utils/supabaseClient';
 import { AuthMode, User } from '../types';
+import { getOrCreateGuestNickname } from '../utils/guestIdentity';
 // inline Button and Input components (originally in ui folder)
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -90,9 +91,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
   const [mode, setMode] = useState<AuthMode>(AuthMode.LOGIN);
 
   const handleGuestLogin = () => {
+    const guestName = getOrCreateGuestNickname();
+    const guestId = `guest_user_${guestName.replace(/[^A-Za-z0-9]/g, '').toLowerCase()}`;
     const guestUser: User = {
-      id: 'guest_user',
-      name: 'Guest Explorer',
+      id: guestId,
+      name: guestName,
       email: 'guest@hikepal.ai',
       role: 'hiker',
       isGuest: true

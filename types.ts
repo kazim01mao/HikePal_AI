@@ -37,7 +37,7 @@ export interface Waypoint {
   id: string;
   lat: number;
   lng: number;
-  type: 'photo' | 'marker';
+  type: 'photo' | 'marker' | 'emotion' | 'reminder';
   note?: string;
   imageUrl?: string;
 }

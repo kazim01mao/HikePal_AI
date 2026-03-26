@@ -3,6 +3,7 @@ import { supabase } from '../utils/supabaseClient';
 import { UserHikingPreferences } from '../services/segmentRoutingService';
 import { ArrowLeft, Check, AlertCircle } from 'lucide-react';
 import TeamDetailsView from './TeamDetailsView';
+import { getOrCreateGuestNickname } from '../utils/guestIdentity';
 
 interface TeamMemberPreferenceFormProps {
   teamId: string;
@@ -48,9 +49,11 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [showTeamDetails, setShowTeamDetails] = useState(false); // 🆕 显示队伍详情
+  const [nicknameTouched, setNicknameTouched] = useState(false);
 
   // 获取当前用户信息
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [profileNickname, setProfileNickname] = useState('');
   const [teamInfo, setTeamInfo] = useState<any>(null);
   const [isLoadingTeam, setIsLoadingTeam] = useState(true);
 
@@ -62,11 +65,24 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
       if (user?.email) {
         setMemberEmail(user.email);  // 自动填充登录用户的邮箱
       }
+      if (user?.id) {
+        const { data: profileData } = await supabase
+          .from('profiles')
+          .select('full_name, username')
+          .eq('id', user.id)
+          .single();
+        const nick = (profileData?.full_name || profileData?.username || '').trim();
+        if (nick) {
+          setProfileNickname(nick);
+        }
+      }
       if (typeof window !== 'undefined') {
         const storedTeamName = localStorage.getItem(`hikepal_team_member_name_${teamId}`);
         const storedGroupName = localStorage.getItem('hikepal_group_nickname');
         if (!userName && (storedTeamName || storedGroupName)) {
           setUserName((storedTeamName || storedGroupName || '').trim());
+        } else if (!userName && !user) {
+          setUserName(getOrCreateGuestNickname());
         }
       }
       console.log('Current user:', user);
@@ -103,6 +119,25 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
     getUser();
     getTeamInfo();
   }, [teamId]);
+
+  useEffect(() => {
+    if (!profileNickname || nicknameTouched) return;
+    setUserName(profileNickname);
+  }, [profileNickname, nicknameTouched]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleNicknameUpdated = (event: Event) => {
+      const nickname = ((event as CustomEvent<{ nickname?: string }>).detail?.nickname || '').trim();
+      if (!nickname) return;
+      setProfileNickname(nickname);
+      if (!nicknameTouched) {
+        setUserName(nickname);
+      }
+    };
+    window.addEventListener('hikepal:nickname-updated', handleNicknameUpdated);
+    return () => window.removeEventListener('hikepal:nickname-updated', handleNicknameUpdated);
+  }, [nicknameTouched]);
 
   /**
    * 处理提交偏好
@@ -297,6 +332,11 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
         teamName={teamInfo?.name || 'Team'}
         teamDescription={teamInfo?.description}
         maxMembers={teamInfo?.max_team_size || 5}
+        onEditPreferences={() => {
+          setShowTeamDetails(false);
+          setSubmitSuccess(false);
+          setSubmitError(null);
+        }}
         onBack={() => {
           if (onBack) onBack();
         }}
@@ -372,7 +412,10 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
             <input
               type="text"
               value={userName}
-              onChange={(e) => setUserName(e.target.value)}
+              onChange={(e) => {
+                setNicknameTouched(true);
+                setUserName(e.target.value);
+              }}
               placeholder="e.g., Alex"
               className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-hike-green"
               required

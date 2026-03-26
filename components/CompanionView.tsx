@@ -8,6 +8,7 @@ import { DRAGONS_BACK_COORDINATES } from '../utils/trailData';
 import { useHikeStore, RouteData } from '../store/hikeStore';
 import { usePathScrubbing } from '../hooks/usePathScrubbing';
 import { MovementModeModal } from './MovementModeModal';
+import { fetchHongKongCurrentWeather, formatWeatherForPrompt } from '../services/hkWeatherService';
 
 // --- Utility Functions ---
 function getDistanceFromLatLonInM(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -32,17 +33,28 @@ function isPointNearRoute(pointLat: number, pointLng: number, routeCoords: [numb
   return false;
 }
 
+function normalizeLatLng(a: number, b: number): [number, number] | null {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  const absA = Math.abs(a);
+  const absB = Math.abs(b);
+  if (absA <= 90 && absB <= 180) return [a, b]; // [lat, lng]
+  if (absB <= 90 && absA <= 180) return [b, a]; // [lng, lat] -> swap
+  return null;
+}
+
 function normalizePoint(p: any): [number, number] | null {
   if (Array.isArray(p) && p.length >= 2) {
     const [a, b] = p;
-    if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b)) {
-      return [a, b];
-    }
+    if (typeof a === 'number' && typeof b === 'number') return normalizeLatLng(a, b);
   }
   if (p && typeof p === 'object' && typeof p.lat === 'number' && typeof p.lng === 'number') {
-    if (Number.isFinite(p.lat) && Number.isFinite(p.lng)) {
-      return [p.lat, p.lng];
-    }
+    return normalizeLatLng(p.lat, p.lng);
+  }
+  if (p && typeof p === 'object' && typeof p.latitude === 'number' && typeof p.longitude === 'number') {
+    return normalizeLatLng(p.latitude, p.longitude);
+  }
+  if (p && typeof p === 'object' && p.type === 'Point' && Array.isArray(p.coordinates) && p.coordinates.length >= 2) {
+    return normalizeLatLng(p.coordinates[1], p.coordinates[0]);
   }
   return null;
 }
@@ -52,9 +64,20 @@ function isValidPoint(p: any): p is [number, number] {
 }
 
 function sanitizeRouteCoords(raw: any): [number, number][] {
-  if (!Array.isArray(raw)) return [];
+  let candidate: any = raw;
+  if (candidate && typeof candidate === 'object') {
+    if (candidate.type === 'Feature' && candidate.geometry) {
+      candidate = candidate.geometry;
+    }
+    if (candidate.type === 'LineString' && Array.isArray(candidate.coordinates)) {
+      candidate = candidate.coordinates.map((pt: any) =>
+        Array.isArray(pt) && pt.length >= 2 ? [pt[1], pt[0]] : pt
+      );
+    }
+  }
+  if (!Array.isArray(candidate)) return [];
   const cleaned: [number, number][] = [];
-  raw.forEach((pt) => {
+  candidate.forEach((pt) => {
     const norm = normalizePoint(pt);
     if (norm) cleaned.push(norm);
   });
@@ -72,16 +95,6 @@ function parseGeographyPoint(geoObj: any): [number, number] | null {
   }
   return null;
 }
-
-const normalizeLatLng = (a: number, b: number): [number, number] | null => {
-  if (Number.isFinite(a) && Number.isFinite(b)) {
-    const absA = Math.abs(a);
-    const absB = Math.abs(b);
-    if (absA <= 90 && absB <= 180) return [a, b]; // [lat, lng]
-    if (absB <= 90 && absA <= 180) return [b, a]; // [lng, lat] -> swap
-  }
-  return null;
-};
 
 const getCoords = (r: any): [number, number] | null => {
   // Handle GeoJSON format if present
@@ -141,6 +154,35 @@ const getCoords = (r: any): [number, number] | null => {
   return null;
 };
 
+interface EmotionNote {
+  id: string | number;
+  team_id?: string | null;
+  route_id?: string | null;
+  user_id: string;
+  user_name?: string | null;
+  content: string;
+  latitude: number;
+  longitude: number;
+  created_at?: string | null;
+}
+
+const isMissingRouteScopeColumnError = (error: any): boolean => {
+  const code = String(error?.code || '');
+  const message = String(error?.message || '').toLowerCase();
+  return code === '42703' || (message.includes('route_id') && message.includes('column'));
+};
+
+const isEmotionNotePermissionError = (error: any): boolean => {
+  const code = String(error?.code || '');
+  const message = String(error?.message || '').toLowerCase();
+  return code === '42501' || message.includes('row-level security');
+};
+
+const filterNotesForRoute = (notes: EmotionNote[], activeRouteId: string | null) => {
+  if (!activeRouteId) return notes;
+  return notes.filter(note => !note.route_id || String(note.route_id) === String(activeRouteId));
+};
+
 interface CompanionViewProps {
   user: User;
   activeRoute: Route | null;
@@ -187,6 +229,9 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [showAddNote, setShowAddNote] = useState(false);
   const [noteContent, setNoteContent] = useState('');
   const [isNoteSubmitting, setIsNoteSubmitting] = useState(false);
+  const [emotionNotes, setEmotionNotes] = useState<EmotionNote[]>([]);
+  const [includeEmotionNotesOnSave, setIncludeEmotionNotesOnSave] = useState(true);
+  const [includeEmotionNotesOnUpload, setIncludeEmotionNotesOnUpload] = useState(true);
   const [showRouteInfo, setShowRouteInfo] = useState(false);
   const [hasStartedHike, setHasStartedHike] = useState(false);
   const [alertsEnabled, setAlertsEnabled] = useState(true);
@@ -195,6 +240,19 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [aiHighlights, setAiHighlights] = useState<string>('');
   const [isLoadingHighlights, setIsLoadingHighlights] = useState(false);
   const [toast, setToast] = useState<{message: string, type: 'success' | 'info'} | null>(null);
+  const activeRouteId = activeRoute?.id || null;
+
+  const appendRecordedPoint = (nextPoint: [number, number]) => {
+    setRecordedPath(prev => {
+      if (prev.length === 0) return [nextPoint];
+      const last = prev[prev.length - 1];
+      if (getDistanceFromLatLonInM(last[0], last[1], nextPoint[0], nextPoint[1]) < 3) return prev;
+      return [...prev, nextPoint];
+    });
+    if (recordedPolylineRef.current) {
+      recordedPolylineRef.current.addLatLng(nextPoint);
+    }
+  };
   
   const mapContainerRef = useRef<HTMLDivElement>(null);
   
@@ -208,7 +266,9 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const userMarkerRef = useRef<any>(null);
   const teammateMarkersRef = useRef<{ [id: string]: any }>({});
   const reminderMarkersRef = useRef<any[]>([]);
+  const emotionNoteMarkersRef = useRef<{ [id: string]: any }>({});
   const recordedPolylineRef = useRef<any>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<any>(null);
   const isReviewMode = !!(activeRoute as any)?.isReview;
 
@@ -344,8 +404,73 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   };
 
   const fetchWeather = async () => {
-    const mockWeather = { temp: 26, humidity: 72, condition: 'Clear Sky' };
-    setRiskStats(mockWeather);
+    const weather = await fetchHongKongCurrentWeather();
+    setRiskStats({ temp: weather.temp, humidity: weather.humidity, condition: weather.condition });
+  };
+
+  const buildCollectedWaypoints = (includeEmotionNotes: boolean): Waypoint[] => {
+    const reminderWaypoints = Array.from(alertedItemsRef.current).map(id => {
+      const item = reminderInfo.find(r => r.id === id);
+      const coords = getCoords(item);
+      return {
+        id: item?.id || String(id),
+        lat: coords ? coords[0] : 0,
+        lng: coords ? coords[1] : 0,
+        note: item?.name || 'Reminder',
+        type: 'reminder',
+        timestamp: new Date()
+      } as unknown as Waypoint;
+    });
+
+    if (!includeEmotionNotes) return reminderWaypoints;
+
+    const emotionWaypoints = emotionNotes
+      .filter(note => typeof note.latitude === 'number' && typeof note.longitude === 'number')
+      .map(note => ({
+        id: `emotion-${note.id}`,
+        lat: note.latitude,
+        lng: note.longitude,
+        note: note.content,
+        type: 'emotion',
+        timestamp: note.created_at ? new Date(note.created_at) : new Date()
+      } as unknown as Waypoint));
+
+    return [...reminderWaypoints, ...emotionWaypoints];
+  };
+
+  const loadEmotionNotes = async () => {
+    if (!activeRouteId) {
+      setEmotionNotes([]);
+      return;
+    }
+
+    try {
+      const scopeCol = 'id, team_id, route_id, user_id, user_name, content, latitude, longitude, created_at';
+      const fallbackCol = 'id, team_id, user_id, user_name, content, latitude, longitude, created_at';
+
+      let query = supabase
+        .from('team_member_emotions')
+        .select(scopeCol)
+        .order('created_at', { ascending: true });
+      query = teamId ? query.eq('team_id', teamId) : query.eq('user_id', userId);
+
+      let { data, error } = await query;
+      if (error && isMissingRouteScopeColumnError(error)) {
+        let fallbackQuery = supabase
+          .from('team_member_emotions')
+          .select(fallbackCol)
+          .order('created_at', { ascending: true });
+        fallbackQuery = teamId ? fallbackQuery.eq('team_id', teamId) : fallbackQuery.eq('user_id', userId);
+        const fallback = await fallbackQuery;
+        data = fallback.data as any;
+        error = fallback.error;
+      }
+      if (error) throw error;
+      const notes = Array.isArray(data) ? (data as EmotionNote[]) : [];
+      setEmotionNotes(filterNotesForRoute(notes, activeRouteId));
+    } catch (err) {
+      console.warn('Failed to load emotion notes:', err);
+    }
   };
 
   const handleConfirmUpload = async () => {
@@ -362,18 +487,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
           duration: activeRoute.duration,
           difficulty: activeRoute.difficulty,
           coordinates: recordedPath,
-          waypoints: Array.from(alertedItemsRef.current).map(id => {
-             const item = reminderInfo.find(r => r.id === id);
-             const coords = getCoords(item);
-             return { 
-               id: item?.id || id,
-               lat: coords ? coords[0] : 0, 
-               lng: coords ? coords[1] : 0, 
-               note: item?.name || 'Reminder', 
-               type: 'reminder',
-               timestamp: new Date()
-             } as unknown as Waypoint;
-          }) 
+          waypoints: buildCollectedWaypoints(includeEmotionNotesOnUpload)
         },
       });
       setShowUploadModal(false);
@@ -393,12 +507,13 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
   useEffect(() => {
     loadMetadata();
+    loadEmotionNotes();
     if (teamId) {
       loadTeamMembers();
       const interval = setInterval(loadTeamMembers, 5000);
       return () => clearInterval(interval);
     }
-  }, [teamId]);
+  }, [teamId, userId, activeRouteId]);
 
   useEffect(() => {
     if (!teamId) return;
@@ -440,6 +555,53 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       supabase.removeChannel(channel);
     };
   }, [teamId]);
+
+  useEffect(() => {
+    if (!activeRouteId) {
+      setEmotionNotes([]);
+      return;
+    }
+
+    const channelName = teamId ? `team_emotions_live_${teamId}` : `solo_emotions_live_${userId}`;
+    const channel = supabase
+      .channel(channelName)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'team_member_emotions',
+          ...(teamId
+            ? { filter: `team_id=eq.${teamId}` }
+            : { filter: `user_id=eq.${userId}` }),
+        },
+        (payload) => {
+          setEmotionNotes(prev => {
+            if (payload.eventType === 'DELETE') {
+              const removed = payload.old as any;
+              return prev.filter(note => note.id !== removed?.id);
+            }
+
+            const next = payload.new as EmotionNote;
+            if (activeRouteId && next.route_id && String(next.route_id) !== String(activeRouteId)) {
+              return prev;
+            }
+            const idx = prev.findIndex(note => note.id === next.id);
+            if (idx >= 0) {
+              const updated = [...prev];
+              updated[idx] = { ...updated[idx], ...next };
+              return updated;
+            }
+            return [...prev, next];
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [teamId, userId, activeRouteId]);
 
   // Generate AI Highlights when route changes
   useEffect(() => {
@@ -486,9 +648,11 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
     const notifyNearbyReminders = async () => {
       const me = teamMembers.find(m => m.user_id === userId);
-      const weatherText = riskStats?.condition
-        ? `${riskStats.condition}, ${riskStats.temp ?? 'N/A'}C, humidity ${riskStats.humidity ?? 'N/A'}%`
-        : 'not available';
+      const weatherText = formatWeatherForPrompt({
+        condition: riskStats?.condition,
+        temp: riskStats?.temp,
+        humidity: riskStats?.humidity
+      });
 
       for (const { r, coords } of relatedReminders) {
         if (!coords) continue;
@@ -559,14 +723,10 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
         const newPos: [number, number] = [lat, lng];
         setUserPos(newPos);
-        setRecordedPath(prev => [...prev, newPos]);
-        
-        // Update live polyline on map
-        if (recordedPolylineRef.current) {
-          recordedPolylineRef.current.addLatLng(newPos);
-          if (!activeRoute) {
-            mapInstanceRef.current?.panTo(newPos);
-          }
+        appendRecordedPoint(newPos);
+
+        if (!activeRoute) {
+          mapInstanceRef.current?.panTo(newPos);
         }
         
         // Sync to database so teammates can see
@@ -675,7 +835,9 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                 e.target.setLatLng([snapped.lat, snapped.lng]);
                 
                 // 3. Sync States
-                setUserPos([snapped.lat, snapped.lng]);
+                const snappedPoint: [number, number] = [snapped.lat, snapped.lng];
+                setUserPos(snappedPoint);
+                appendRecordedPoint(snappedPoint);
                 updateLocation(snapped);
               }
             }
@@ -690,7 +852,9 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
               const snapped = handleScrubbing(rawLngLat, currentRoute);
               if (snapped) {
                 e.target.setLatLng([snapped.lat, snapped.lng]);
-                setUserPos([snapped.lat, snapped.lng]);
+                const snappedPoint: [number, number] = [snapped.lat, snapped.lng];
+                setUserPos(snappedPoint);
+                appendRecordedPoint(snappedPoint);
                 updateLocation(snapped);
               }
             }
@@ -770,6 +934,15 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       }, 300);
     }
   }, [panelMode, activeRoute]);
+
+  useEffect(() => {
+    if (panelMode !== 'chat') return;
+    const container = chatScrollRef.current;
+    if (!container) return;
+    requestAnimationFrame(() => {
+      container.scrollTop = container.scrollHeight;
+    });
+  }, [messages, panelMode, chatType]);
 
   // Handle Reminder Markers (Facilities & Risks)
   useEffect(() => {
@@ -873,6 +1046,78 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     });
   }, [reminderInfo, mapInstanceRef.current, isRecording, activeRoute]);
 
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const L = (window as any).L;
+    if (!map || !L) return;
+
+    if (!activeRouteId) {
+      Object.keys(emotionNoteMarkersRef.current).forEach(id => {
+        emotionNoteMarkersRef.current[id].remove();
+        delete emotionNoteMarkersRef.current[id];
+      });
+      return;
+    }
+
+    const escaped = (txt: string) =>
+      String(txt || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    const currentIds = new Set(
+      emotionNotes
+        .filter(n => typeof n.latitude === 'number' && typeof n.longitude === 'number')
+        .map(n => n.id)
+    );
+
+    Object.keys(emotionNoteMarkersRef.current).forEach(id => {
+      if (!currentIds.has(id)) {
+        emotionNoteMarkersRef.current[id].remove();
+        delete emotionNoteMarkersRef.current[id];
+      }
+    });
+
+    emotionNotes.forEach(note => {
+      if (typeof note.latitude !== 'number' || typeof note.longitude !== 'number') return;
+      const isSelf = note.user_id === userId;
+      const displayName = (note.user_name || '').trim() || (isSelf ? 'Me' : 'Teammate');
+      const markerColor = isSelf ? '#F97316' : '#14B8A6';
+      const icon = L.divIcon({
+        html: `<div style="background-color: ${markerColor}; color: white; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display:flex; align-items:center; justify-content:center; font-size:12px; box-shadow: 0 2px 4px rgba(0,0,0,0.35);">📝</div>`,
+        className: '',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+        popupAnchor: [0, -12]
+      });
+      const createdAt = note.created_at ? new Date(note.created_at).toLocaleString() : 'Now';
+      const popupContent = `
+        <div style="font-family: system-ui, sans-serif; padding: 4px; max-width: 220px;">
+          <div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">
+            <strong style="color: ${markerColor};">${escaped(displayName)}</strong> · ${escaped(createdAt)}
+          </div>
+          <div style="font-size: 13px; color: #111827; line-height: 1.4;">
+            ${escaped(note.content)}
+          </div>
+        </div>
+      `;
+
+      if (emotionNoteMarkersRef.current[note.id]) {
+        emotionNoteMarkersRef.current[note.id]
+          .setLatLng([note.latitude, note.longitude])
+          .setIcon(icon)
+          .bindPopup(popupContent);
+      } else {
+        emotionNoteMarkersRef.current[note.id] = L
+          .marker([note.latitude, note.longitude], { icon, zIndexOffset: 9000 })
+          .addTo(map)
+          .bindPopup(popupContent);
+      }
+    });
+  }, [emotionNotes, userId, activeRouteId]);
+
   // Handle teammate markers
   useEffect(() => {
     if (!mapInstanceRef.current || isReviewMode) return;
@@ -956,6 +1201,10 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         } as RouteData);
       }
     }
+    
+    // Set isDirectRecord to true if there is no activeRoute and no teamId
+    const isDirectRecord = !activeRoute && !teamId;
+    useHikeStore.getState().setDirectRecord(isDirectRecord);
     setModalOpen(true);
   };
 
@@ -1101,30 +1350,91 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   }, [activeRoute, hasStartedHike]);
 
   const handleAddNote = async () => {
-    if (!noteContent.trim()) return;
+    const content = noteContent.trim();
+    if (!content || !activeRouteId) return;
     setIsNoteSubmitting(true);
     try {
-      const { error } = await supabase.from('team_member_emotions').insert({
+      const payload = {
         team_id: teamId,
+        route_id: activeRouteId,
         user_id: userId,
-        content: noteContent,
+        user_name: getSelfDisplayName(),
+        content,
         latitude: userPos ? userPos[0] : 0,
         longitude: userPos ? userPos[1] : 0,
         created_at: new Date().toISOString()
-      });
+      };
+
+      let { data, error } = await supabase
+        .from('team_member_emotions')
+        .insert(payload)
+        .select('id, team_id, route_id, user_id, user_name, content, latitude, longitude, created_at')
+        .single();
+
+      // Backward compatibility: DB may not have route_id column yet.
+      if (error && isMissingRouteScopeColumnError(error)) {
+        const fallback = await supabase
+          .from('team_member_emotions')
+          .insert({
+            team_id: payload.team_id,
+            user_id: payload.user_id,
+            user_name: payload.user_name,
+            content: payload.content,
+            latitude: payload.latitude,
+            longitude: payload.longitude,
+            created_at: payload.created_at
+          })
+          .select('id, team_id, user_id, user_name, content, latitude, longitude, created_at')
+          .single();
+        data = fallback.data as any;
+        error = fallback.error;
+      }
 
       if (error) throw error;
+      if (data) {
+        setEmotionNotes(prev => {
+          if (prev.find(note => note.id === data.id)) return prev;
+          return [...prev, data as EmotionNote];
+        });
+      }
       
       setMessages(prev => [...prev, {
         id: `note-${Date.now()}`,
         sender: 'user',
-        text: `📍 Saved a note: "${noteContent}"`,
+        text: `📍 Saved a note: "${content}"`,
         timestamp: new Date()
       }]);
+      setToast({ message: 'Emotion note saved', type: 'success' });
+      setTimeout(() => setToast(null), 3000);
       
       setNoteContent('');
       setShowAddNote(false);
-    } catch (e) {
+    } catch (e: any) {
+      if (isEmotionNotePermissionError(e)) {
+        const localNote: EmotionNote = {
+          id: `local-${Date.now()}`,
+          team_id: teamId || null,
+          route_id: activeRouteId || null,
+          user_id: userId,
+          user_name: getSelfDisplayName(),
+          content,
+          latitude: userPos ? userPos[0] : 0,
+          longitude: userPos ? userPos[1] : 0,
+          created_at: new Date().toISOString()
+        };
+        setEmotionNotes(prev => [...prev, localNote]);
+        setMessages(prev => [...prev, {
+          id: `note-local-${Date.now()}`,
+          sender: 'user',
+          text: `📍 Saved locally: "${content}"`,
+          timestamp: new Date()
+        }]);
+        setToast({ message: 'Saved locally (no DB permission)', type: 'info' });
+        setTimeout(() => setToast(null), 3000);
+        setNoteContent('');
+        setShowAddNote(false);
+        return;
+      }
       console.error('Failed to save note:', e);
       alert('Failed to save note');
     } finally {
@@ -1201,7 +1511,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   };
 
   return (
-    <div className="flex flex-col h-[100svh] min-h-[100svh] bg-gray-50 relative overflow-hidden">
+    <div className="flex flex-col h-full min-h-0 max-h-full bg-gray-50 relative overflow-hidden">
       <MovementModeModal />
       {/* Toast Notification */}
       {toast && (
@@ -1248,6 +1558,15 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                       <div className="flex-1 bg-gray-50 p-2 rounded"><div>Time</div><div className="font-bold">{formatTime(elapsedTime)}</div></div>
                       <div className="flex-1 bg-gray-50 p-2 rounded"><div>Dist</div><div className="font-bold">{(recordedPath.length * 0.005).toFixed(2)} km</div></div>
                   </div>
+                  <label className="flex items-center justify-between text-sm text-gray-700 mb-4 bg-orange-50 border border-orange-100 rounded-lg px-3 py-2">
+                    <span>Include Emotion Notes</span>
+                    <input
+                      type="checkbox"
+                      checked={includeEmotionNotesOnSave}
+                      onChange={e => setIncludeEmotionNotesOnSave(e.target.checked)}
+                      className="h-4 w-4 accent-orange-500"
+                    />
+                  </label>
                   {!user.isGuest && (
                     <>
                       <button 
@@ -1260,18 +1579,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                             distance: (recordedPath.length * 0.005).toFixed(2) + 'km', 
                             difficulty: activeRoute?.difficulty || 0, 
                             coordinates: recordedPath, 
-                            waypoints: Array.from(alertedItemsRef.current).map(id => {
-                              const item = reminderInfo.find(r => r.id === id);
-                              const coords = getCoords(item);
-                              return { 
-                                id: item?.id || id,
-                                lat: coords ? coords[0] : 0, 
-                                lng: coords ? coords[1] : 0, 
-                                note: item?.name || 'Reminder', 
-                                type: 'reminder',
-                                timestamp: new Date()
-                              } as unknown as Waypoint;
-                            }) 
+                            waypoints: buildCollectedWaypoints(includeEmotionNotesOnSave)
                           }); 
                           setShowSaveDialog(false); 
                           if(onBack) onBack(); 
@@ -1301,7 +1609,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       )}
 
       {/* Map Section */}
-      <div className={`relative transition-all duration-300 ${panelMode === 'map' ? 'h-[60%] md:h-[65%] lg:h-[68%]' : 'h-[38%]'}`}>
+      <div className={`relative transition-all duration-300 ${panelMode === 'map' ? 'h-[72%] sm:h-[70%] md:h-[66%]' : 'h-[44%] sm:h-[42%]'}`}>
         <div ref={mapContainerRef} className="absolute inset-0 bg-gray-200 z-0" />
         
         {!activeRoute && (
@@ -1393,9 +1701,45 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                                if (data) canPassId = true;
                             }
 
-                            const snapshotCoords = (activeRoute.coordinates && activeRoute.coordinates.length > 0)
+                            let snapshotCoords = (activeRoute.coordinates && activeRoute.coordinates.length > 0)
                               ? activeRoute.coordinates
                               : mergeSegmentCoordinates((activeRoute as any).segments || []);
+
+                            if ((!snapshotCoords || snapshotCoords.length === 0) && activeRoute.id) {
+                              const { data: composedRoute } = await supabase
+                                .from('composed_routes')
+                                .select('full_coordinates, segments')
+                                .eq('id', activeRoute.id)
+                                .single();
+                              if (composedRoute) {
+                                const composedCoords = Array.isArray((composedRoute as any).full_coordinates)
+                                  ? (composedRoute as any).full_coordinates
+                                  : [];
+                                snapshotCoords = composedCoords.length > 0
+                                  ? composedCoords
+                                  : mergeSegmentCoordinates((composedRoute as any).segments || []);
+                              } else {
+                                const { data: officialRoute } = await supabase
+                                  .from('routes')
+                                  .select('full_coordinates, segments')
+                                  .eq('id', activeRoute.id)
+                                  .single();
+                                if (officialRoute) {
+                                  const officialCoords = Array.isArray((officialRoute as any).full_coordinates)
+                                    ? (officialRoute as any).full_coordinates
+                                    : [];
+                                  snapshotCoords = officialCoords.length > 0
+                                    ? officialCoords
+                                    : mergeSegmentCoordinates((officialRoute as any).segments || []);
+                                }
+                              }
+                            }
+
+                            const { data: memberRows } = await supabase
+                              .from('team_members')
+                              .select('user_id, user_name, role, preferences_completed, user_preferences, joined_at')
+                              .eq('team_id', teamId)
+                              .order('joined_at', { ascending: true });
                             
                             const targetRouteData = {
                               id: activeRoute.id,
@@ -1407,7 +1751,10 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                               difficulty: activeRoute.difficulty,
                               elevationGain: (activeRoute as any).elevationGain || 0,
                               coordinates: snapshotCoords,
-                              segments: (activeRoute as any).segments || []
+                              segments: (activeRoute as any).segments || [],
+                              confirmed_at: new Date().toISOString(),
+                              confirmed_by: userId || null,
+                              team_members_snapshot: Array.isArray(memberRows) ? memberRows : []
                             };
 
                             const { error } = await supabase
@@ -1458,24 +1805,39 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
           <div className={`absolute right-4 z-[400] flex flex-col origin-top-right ${panelMode === 'chat' ? 'top-4 gap-2 scale-90' : 'top-24 gap-3'}`}>
              <button onClick={() => setShowSOS(true)} className={`bg-red-600 text-white rounded-full shadow-2xl font-black border-2 border-white/30 ${panelMode === 'chat' ? 'p-3 text-[10px]' : 'p-4 text-[11px]'}`}>SOS</button>
              {isLeader && <button onClick={() => setShowSaveDialog(true)} className={`bg-blue-600 text-white rounded-full shadow-lg border border-white/30 ${panelMode === 'chat' ? 'p-3' : 'p-3.5'}`}><Upload size={panelMode === 'chat' ? 18 : 20}/></button>}
-             <button onClick={() => setShowAddNote(true)} className={`bg-white rounded-full shadow-lg text-orange-500 border border-white/30 ${panelMode === 'chat' ? 'p-3' : 'p-3.5'}`}><Star size={panelMode === 'chat' ? 18 : 20}/></button>
              <button
                onClick={() => {
-                 if (!hasStartedHike) return;
-                 setIsRecording(false);
-                 setShowSaveDialog(true);
+                 if (!activeRouteId) {
+                   setToast({ message: 'Select a route first to add an emotion note.', type: 'info' });
+                   setTimeout(() => setToast(null), 3000);
+                   return;
+                 }
+                 setShowAddNote(true);
                }}
-               className={`${panelMode === 'chat' ? 'p-3' : 'p-3.5'} rounded-full shadow-lg border border-white/30 ${hasStartedHike ? 'bg-green-600 text-white' : 'bg-green-200 text-white/70 cursor-not-allowed'}`}
-               disabled={!hasStartedHike}
+               className={`bg-white rounded-full shadow-lg border border-white/30 ${activeRouteId ? 'text-orange-500' : 'text-gray-300'} ${panelMode === 'chat' ? 'p-3' : 'p-3.5'}`}
+               title={activeRouteId ? 'Add emotion note' : 'Select a route first'}
              >
-               <Check size={panelMode === 'chat' ? 18 : 20}/>
+               <Star size={panelMode === 'chat' ? 18 : 20}/>
              </button>
-             <button onClick={() => { 
-               if(window.confirm('Quit?')) {
-                 resetHikeStore();
-                 onBack && onBack(); 
-               }
-             }} className={`bg-white rounded-full shadow-lg text-gray-500 border border-white/30 ${panelMode === 'chat' ? 'p-3' : 'p-3.5'}`}><X size={panelMode === 'chat' ? 18 : 20}/></button>
+             {hasStartedHike && (
+               <>
+                 <button
+                   onClick={() => {
+                     setIsRecording(false);
+                     setShowSaveDialog(true);
+                   }}
+                   className={`${panelMode === 'chat' ? 'p-3' : 'p-3.5'} rounded-full shadow-lg border border-white/30 bg-green-600 text-white`}
+                 >
+                   <Check size={panelMode === 'chat' ? 18 : 20}/>
+                 </button>
+                 <button onClick={() => { 
+                   if(window.confirm('Quit?')) {
+                     resetHikeStore();
+                     onBack && onBack(); 
+                   }
+                 }} className={`bg-white rounded-full shadow-lg text-gray-500 border border-white/30 ${panelMode === 'chat' ? 'p-3' : 'p-3.5'}`}><X size={panelMode === 'chat' ? 18 : 20}/></button>
+               </>
+             )}
           </div>
         )}
         
@@ -1604,12 +1966,12 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
             </div>
          )}
          <div className="flex border-b border-gray-100">
-            <button onClick={() => {setChatType('ai'); setPanelMode('chat');}} className={`flex-1 py-4 text-sm font-bold ${chatType === 'ai' ? 'text-hike-green border-b-2 border-hike-green' : 'text-gray-400'}`}>AI Guide</button>
-            <button onClick={() => {setChatType('team'); setPanelMode('chat');}} className={`flex-1 py-4 text-sm font-bold ${chatType === 'team' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400'}`}>
+            <button onClick={() => {setChatType('ai'); setPanelMode('chat');}} className={`flex-1 ${panelMode === 'map' ? 'py-2.5 text-xs' : 'py-4 text-sm'} font-bold ${chatType === 'ai' ? 'text-hike-green border-b-2 border-hike-green' : 'text-gray-400'}`}>AI Guide</button>
+            <button onClick={() => {setChatType('team'); setPanelMode('chat');}} className={`flex-1 ${panelMode === 'map' ? 'py-2.5 text-xs' : 'py-4 text-sm'} font-bold ${chatType === 'team' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400'}`}>
                <span className={isRefreshingTeam ? 'animate-pulse' : ''}>Team ({teamId ? actualTeamSize : (activeRoute ? 1 : 0)})</span>
             </button>
          </div>
-         <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4 bg-gray-50 select-text">
+         <div ref={chatScrollRef} className={`flex-1 min-h-0 overflow-y-auto bg-gray-50 select-text ${panelMode === 'map' ? 'p-2.5 sm:p-3' : 'p-3 sm:p-4'}`}>
             {chatType === 'team' ? (
                <div className="space-y-4 select-text">
                   <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 select-text">
@@ -1630,12 +1992,14 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                </div>
             ) : (
                <div className="space-y-4 select-text">
-                  {panelMode === 'chat' && messages.length < 2 && (
-                     <div className="grid grid-cols-4 gap-2 mb-4">
-                        <button onClick={() => handleSendMessage("Where is water?")} className="flex flex-col items-center bg-white p-2 rounded-xl border shadow-sm"><Droplet size={18} className="text-blue-500 mb-1"/><span className="text-[9px]">Water</span></button>
-                        <button onClick={() => handleSendMessage("Rest points?")} className="flex flex-col items-center bg-white p-2 rounded-xl border shadow-sm"><Tent size={18} className="text-green-500 mb-1"/><span className="text-[9px]">Rest</span></button>
-                        <button onClick={() => handleSendMessage("Help!")} className="flex flex-col items-center bg-white p-2 rounded-xl border shadow-sm"><AlertCircle size={18} className="text-red-500 mb-1"/><span className="text-[9px]">Help</span></button>
-                        <button onClick={() => handleSendMessage("Trail Info")} className="flex flex-col items-center bg-white p-2 rounded-xl border shadow-sm"><Info size={18} className="text-gray-400 mb-1"/><span className="text-[9px]">Info</span></button>
+                  {panelMode === 'chat' && (
+                     <div className="sticky top-0 z-20 pb-2 mb-3">
+                      <div className="grid grid-cols-4 gap-2 bg-white/18 backdrop-blur-xl border border-white/30 rounded-2xl p-2 shadow-[0_8px_20px_rgba(0,0,0,0.08)]">
+                        <button onClick={() => handleSendMessage("Where is water?")} className="flex flex-col items-center bg-white/45 hover:bg-white/60 p-2 rounded-xl border border-white/35 shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition-colors"><Droplet size={18} className="text-blue-500 mb-1"/><span className="text-[9px]">Water</span></button>
+                        <button onClick={() => handleSendMessage("Rest points?")} className="flex flex-col items-center bg-white/45 hover:bg-white/60 p-2 rounded-xl border border-white/35 shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition-colors"><Tent size={18} className="text-green-500 mb-1"/><span className="text-[9px]">Rest</span></button>
+                        <button onClick={() => handleSendMessage("Help!")} className="flex flex-col items-center bg-white/45 hover:bg-white/60 p-2 rounded-xl border border-white/35 shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition-colors"><AlertCircle size={18} className="text-red-500 mb-1"/><span className="text-[9px]">Help</span></button>
+                        <button onClick={() => handleSendMessage("Trail Info")} className="flex flex-col items-center bg-white/45 hover:bg-white/60 p-2 rounded-xl border border-white/35 shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition-colors"><Info size={18} className="text-gray-400 mb-1"/><span className="text-[9px]">Info</span></button>
+                      </div>
                      </div>
                   )}
                   {(panelMode === 'chat'
@@ -1662,14 +2026,14 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
          </div>
          {!isReviewMode && (
            panelMode === 'chat' ? (
-             <div className="p-3 bg-white border-t flex items-center gap-2 pb-[env(safe-area-inset-bottom)]">
+             <div className="p-3 bg-white border-t flex items-center gap-2 pb-[calc(4.75rem+env(safe-area-inset-bottom))]">
                 <input value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} placeholder="Ask AI..." className="flex-1 bg-gray-100 rounded-full px-4 py-2 text-sm outline-none" />
                 <button onClick={() => handleSendMessage()} className="p-2 bg-hike-green text-white rounded-full shadow-sm"><Send size={18} /></button>
              </div>
            ) : (
              <button
                onClick={() => { setChatType('ai'); setPanelMode('chat'); }}
-               className="mx-3 sm:mx-4 mb-[calc(0.5rem+env(safe-area-inset-bottom))] sm:mb-[calc(0.75rem+env(safe-area-inset-bottom))] h-7 sm:h-8 rounded-full bg-white/95 border border-gray-200 shadow-sm text-gray-400 text-[11px] sm:text-xs flex items-center justify-center gap-2 hover:text-gray-600 transition-colors"
+               className="mx-3 sm:mx-4 mb-[calc(4.75rem+env(safe-area-inset-bottom))] sm:mb-[calc(5rem+env(safe-area-inset-bottom))] h-7 sm:h-8 rounded-full bg-white/95 border border-gray-200 shadow-sm text-gray-400 text-[11px] sm:text-xs flex items-center justify-center gap-2 hover:text-gray-600 transition-colors"
              >
                <span className="w-2 h-2 bg-hike-green rounded-full"></span>
                Tap to ask AI
@@ -1686,6 +2050,15 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
               <div className="space-y-4">
                  <div><label className="text-xs font-bold text-gray-500 uppercase">Route Name</label><input value={uploadData.name} onChange={e => setUploadData({...uploadData, name: e.target.value})} className="w-full border-b-2 border-hike-green py-2 outline-none"/></div>
                  <div><label className="text-xs font-bold text-gray-500 uppercase">Description</label><textarea value={uploadData.description} onChange={e => setUploadData({...uploadData, description: e.target.value})} className="w-full border-b py-2 h-20 outline-none resize-none"/></div>
+                 <label className="flex items-center justify-between text-sm text-gray-700 bg-orange-50 border border-orange-100 rounded-lg px-3 py-2">
+                   <span>Include Emotion Notes</span>
+                   <input
+                     type="checkbox"
+                     checked={includeEmotionNotesOnUpload}
+                     onChange={e => setIncludeEmotionNotesOnUpload(e.target.checked)}
+                     className="h-4 w-4 accent-orange-500"
+                   />
+                 </label>
                  <button onClick={handleConfirmUpload} disabled={isUploadingRoute} className="w-full bg-hike-green text-white py-3.5 rounded-xl font-bold shadow-lg disabled:opacity-50">{isUploadingRoute ? 'Uploading...' : 'Confirm & Share'}</button>
               </div>
            </div>
