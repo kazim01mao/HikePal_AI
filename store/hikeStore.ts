@@ -44,6 +44,8 @@ interface HikeState {
   setRouteData: (route: RouteData | null) => void;
   setModalOpen: (isOpen: boolean) => void;
   reset: () => void;
+  isDirectRecord: boolean;
+  setDirectRecord: (isDirect: boolean) => void;
 }
 
 export const useHikeStore = create<HikeState>((set) => ({
@@ -51,10 +53,12 @@ export const useHikeStore = create<HikeState>((set) => ({
   currentLocation: null,
   routeData: null,
   isModalOpen: false,
+  isDirectRecord: false,
 
   setMode: (mode) => set({ hikeMode: mode }),
   updateLocation: (location) => set({ currentLocation: location }),
   setRouteData: (route) => set({ routeData: route }),
   setModalOpen: (isOpen) => set({ isModalOpen: isOpen }),
-  reset: () => set({ hikeMode: 'idle', currentLocation: null, routeData: null, isModalOpen: false }),
+  setDirectRecord: (isDirect) => set({ isDirectRecord: isDirect }),
+  reset: () => set({ hikeMode: 'idle', currentLocation: null, routeData: null, isModalOpen: false, isDirectRecord: false }),
 }));

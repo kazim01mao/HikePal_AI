@@ -28,6 +28,7 @@ interface TeamDetailsViewProps {
   maxMembers?: number;
   onBack?: () => void;
   onStartHike?: () => void;
+  onEditPreferences?: () => void;
   isTeamLeader?: boolean;
 }
 
@@ -38,6 +39,7 @@ const TeamDetailsView: React.FC<TeamDetailsViewProps> = ({
   maxMembers = 5,
   onBack,
   onStartHike,
+  onEditPreferences,
   isTeamLeader = false,
 }) => {
   const [members, setMembers] = useState<TeamMember[]>([]);
@@ -179,7 +181,7 @@ const TeamDetailsView: React.FC<TeamDetailsViewProps> = ({
         </div>
 
               {/* Start Hike Button / Waiting Status */}
-              <div className={`border-2 rounded-2xl p-4 shadow-sm animate-fade-in text-center ${routeConfirmed ? 'bg-orange-50 border-orange-200' : 'bg-gray-50 border-gray-200'}`}>
+        <div className={`border-2 rounded-2xl p-4 shadow-sm animate-fade-in text-center ${routeConfirmed ? 'bg-orange-50 border-orange-200' : 'bg-gray-50 border-gray-200'}`}>
                 {routeConfirmed ? (
                   <>
                     <h3 className="font-bold text-orange-900 mb-1">🎉 Route Confirmed!</h3>
@@ -203,6 +205,14 @@ const TeamDetailsView: React.FC<TeamDetailsViewProps> = ({
                     >
                       <Compass size={20} /> {isTeamLeader ? 'Start Team Hike' : 'Join Team Hike'}
                     </button>
+                    {onEditPreferences && (
+                      <button
+                        onClick={onEditPreferences}
+                        className="w-full mt-2 bg-white text-gray-700 font-bold py-3 rounded-xl border border-gray-300 shadow-sm active:scale-95 transition-transform"
+                      >
+                        Edit / Complete My Preferences
+                      </button>
+                    )}
                   </>
                 ) : (
             <>
@@ -214,6 +224,14 @@ const TeamDetailsView: React.FC<TeamDetailsViewProps> = ({
               >
                 <RefreshCw size={18} /> Refresh Status
               </button>
+              {onEditPreferences && (
+                <button
+                  onClick={onEditPreferences}
+                  className="w-full mt-2 bg-white text-gray-700 font-bold py-3 rounded-xl border border-gray-300 shadow-sm active:scale-95 transition-transform"
+                >
+                  Edit / Complete My Preferences
+                </button>
+              )}
             </>
           )}
         </div>

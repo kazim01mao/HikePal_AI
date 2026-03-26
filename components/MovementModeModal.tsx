@@ -3,7 +3,7 @@ import { useHikeStore } from '../store/hikeStore';
 import { X, Play, Pointer } from 'lucide-react';
 
 export const MovementModeModal: React.FC = () => {
-  const { isModalOpen, setModalOpen, setMode } = useHikeStore();
+  const { isModalOpen, setModalOpen, setMode, isDirectRecord } = useHikeStore();
 
   if (!isModalOpen) return null;
 
@@ -21,21 +21,23 @@ export const MovementModeModal: React.FC = () => {
         </div>
 
         <div className="space-y-4">
-          <button
-            onClick={() => {
-              setMode('scrubbing');
-              setModalOpen(false);
-            }}
-            className="w-full flex items-center p-4 border-2 border-gray-200 rounded-xl hover:border-blue-500 hover:bg-blue-50 transition-all group"
-          >
-            <div className="bg-blue-100 p-3 rounded-full group-hover:bg-blue-200 mr-4">
-              <Pointer className="w-6 h-6 text-blue-600" />
-            </div>
-            <div className="text-left">
-              <h3 className="text-lg font-semibold text-gray-800">Manual Path Scrubbing</h3>
-              <p className="text-sm text-gray-500">Simulate hike by dragging along the route</p>
-            </div>
-          </button>
+          {!isDirectRecord && (
+            <button
+              onClick={() => {
+                setMode('scrubbing');
+                setModalOpen(false);
+              }}
+              className="w-full flex items-center p-4 border-2 border-gray-200 rounded-xl hover:border-blue-500 hover:bg-blue-50 transition-all group"
+            >
+              <div className="bg-blue-100 p-3 rounded-full group-hover:bg-blue-200 mr-4">
+                <Pointer className="w-6 h-6 text-blue-600" />
+              </div>
+              <div className="text-left">
+                <h3 className="text-lg font-semibold text-gray-800">Manual Path Scrubbing</h3>
+                <p className="text-sm text-gray-500">Simulate hike by dragging along the route</p>
+              </div>
+            </button>
+          )}
 
           <button
             onClick={() => {

@@ -117,7 +117,8 @@ export const generateRoutesWithAI = async (
   segments: any[], // 从数据库获取的所有segments
   userMood: string,
   userDifficulty: string,
-  userCondition: string
+  userCondition: string,
+  weatherContext?: { temp?: number; humidity?: number; condition?: string; rainfallMm?: number }
 ): Promise<any[]> => {
   try {
     try {
@@ -190,6 +191,7 @@ User Preferences:
 - Mood: ${userMood}
 - Difficulty Level: ${userDifficulty}
 - Specific Condition: ${userCondition}
+- Current Hong Kong Weather: ${weatherContext?.condition || 'Unknown'}, ${weatherContext?.temp ?? 'N/A'}C, humidity ${weatherContext?.humidity ?? 'N/A'}%, rainfall ${weatherContext?.rainfallMm ?? 'N/A'}mm
 
 Available Trail Segments (total: ${segmentsInfo.length}):
 ${JSON.stringify(segmentsInfo, null, 2)}
@@ -284,7 +286,8 @@ export const rankRoutesWithAI = async (
   routes: any[],
   userMood: string,
   userDifficulty: string,
-  userCondition: string
+  userCondition: string,
+  weatherContext?: { temp?: number; humidity?: number; condition?: string; rainfallMm?: number }
 ): Promise<any[]> => {
   try {
     try {
@@ -311,6 +314,7 @@ User Profile:
 - Mood: ${userMood}
 - Difficulty: ${userDifficulty}
 - Current Condition: ${userCondition}
+- Current Hong Kong Weather: ${weatherContext?.condition || 'Unknown'}, ${weatherContext?.temp ?? 'N/A'}C, humidity ${weatherContext?.humidity ?? 'N/A'}%, rainfall ${weatherContext?.rainfallMm ?? 'N/A'}mm
 
 Available Routes:
 ${JSON.stringify(routesInfo, null, 2)}

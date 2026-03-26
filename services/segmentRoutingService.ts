@@ -1,5 +1,6 @@
 import { supabase } from '../utils/supabaseClient';
 import { generateRoutesWithAI, rankRoutesWithAI } from './geminiService';
+import { fetchHongKongCurrentWeather, type HKWeatherData } from './hkWeatherService';
 
 // ============================================================================
 // 类型定义
@@ -526,9 +527,11 @@ export async function fetchRouteById(routeId: string): Promise<ComposedRoute | n
  */
 export async function findMatchingRoutes(
   userPrefs: UserHikingPreferences,
-  topN: number = 5
+  topN: number = 5,
+  weatherContext?: Partial<HKWeatherData>
 ): Promise<RouteMatchScore[]> {
   try {
+    const liveWeather = weatherContext || await fetchHongKongCurrentWeather();
     // =============== 阶段一：使用 AI 动态生成 (优先级最高) ===============
     // User wants custom segment combinations ("Recommended Route 1", etc.), not just pre-defined trails.
     console.log('📡 Using AI to generate custom routes from segments...');
@@ -542,7 +545,8 @@ export async function findMatchingRoutes(
               segments,
               userPrefs.mood,
               userPrefs.difficulty,
-              userPrefs.condition
+              userPrefs.condition,
+              liveWeather
             );
             
             if (aiGeneratedRoutes && aiGeneratedRoutes.length > 0) {
@@ -644,7 +648,8 @@ export async function findMatchingRoutes(
           routes,
           userPrefs.mood,
           userPrefs.difficulty,
-          userPrefs.condition
+          userPrefs.condition,
+          liveWeather
         );
 
         if (rankedResults && rankedResults.length > 0) {
@@ -987,9 +992,64 @@ export async function fetchUploadedRoutes(): Promise<any[]> {
       return [];
     }
 
+    const normalizeLatLng = (a: any, b: any): [number, number] | null => {
+      if (typeof a !== 'number' || typeof b !== 'number') return null;
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+      const absA = Math.abs(a);
+      const absB = Math.abs(b);
+      if (absA <= 90 && absB <= 180) return [a, b];
+      if (absB <= 90 && absA <= 180) return [b, a];
+      return null;
+    };
+
+    const normalizePoint = (p: any): [number, number] | null => {
+      if (Array.isArray(p) && p.length >= 2) {
+        return normalizeLatLng(p[0], p[1]);
+      }
+      if (p && typeof p === 'object' && typeof p.lat === 'number' && typeof p.lng === 'number') {
+        return normalizeLatLng(p.lat, p.lng);
+      }
+      if (p && typeof p === 'object' && typeof p.latitude === 'number' && typeof p.longitude === 'number') {
+        return normalizeLatLng(p.latitude, p.longitude);
+      }
+      if (p && typeof p === 'object' && p.type === 'Point' && Array.isArray(p.coordinates) && p.coordinates.length >= 2) {
+        return normalizeLatLng(p.coordinates[1], p.coordinates[0]);
+      }
+      return null;
+    };
+
+    const sanitizeTrackCoords = (raw: any): [number, number][] => {
+      let candidate: any = raw;
+      if (typeof candidate === 'string') {
+        try {
+          candidate = JSON.parse(candidate);
+        } catch {
+          return [];
+        }
+      }
+      if (candidate && typeof candidate === 'object') {
+        if (candidate.type === 'Feature' && candidate.geometry) {
+          candidate = candidate.geometry;
+        }
+        if (candidate.type === 'LineString' && Array.isArray(candidate.coordinates)) {
+          candidate = candidate.coordinates.map((pt: any) =>
+            Array.isArray(pt) && pt.length >= 2 ? [pt[1], pt[0]] : pt
+          );
+        }
+      }
+      if (!Array.isArray(candidate)) return [];
+      const cleaned: [number, number][] = [];
+      candidate.forEach((pt: any) => {
+        const norm = normalizePoint(pt);
+        if (norm) cleaned.push(norm);
+      });
+      return cleaned;
+    };
+
     // Map to ComposedRoute structure as much as possible
     return data.map((record: any) => {
       const routeData = record.route_data || {};
+      const normalizedCoords = sanitizeTrackCoords(routeData.coordinates);
       return {
         id: record.id,
         name: record.name,
@@ -1004,7 +1064,7 @@ export async function fetchUploadedRoutes(): Promise<any[]> {
         created_by: record.user_id,
         created_at: record.created_at,
         imageUrl: 'https://images.unsplash.com/photo-1551632811-561732d1e306?q=80&w=2070&auto=format&fit=crop', // Placeholder for now
-        full_coordinates: routeData.coordinates || [], // 🆕 Grab coordinates directly
+        full_coordinates: normalizedCoords, // Normalize to [[lat,lng], ...] for stable rendering
         waypoints: routeData.waypoints || [], // 🆕 Grab waypoints
         // Keep original data for reference
         original_data: routeData
@@ -1013,5 +1073,68 @@ export async function fetchUploadedRoutes(): Promise<any[]> {
   } catch (error) {
     console.error('Failed to fetch uploaded routes:', error);
     return [];
+  }
+}
+
+export interface UploadedRouteReview {
+  id: string;
+  uploaded_route_id: string;
+  user_id: string;
+  reviewer_name?: string | null;
+  rating: number;
+  comment: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+export async function fetchUploadedRouteReviews(uploadedRouteId: string): Promise<UploadedRouteReview[]> {
+  if (!uploadedRouteId) return [];
+  try {
+    const { data, error } = await supabase
+      .from('uploaded_route_reviews')
+      .select('id, uploaded_route_id, user_id, reviewer_name, rating, comment, created_at, updated_at')
+      .eq('uploaded_route_id', uploadedRouteId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.warn('Failed to fetch uploaded route reviews:', error);
+      return [];
+    }
+    return (data || []) as UploadedRouteReview[];
+  } catch (error) {
+    console.error('Failed to fetch uploaded route reviews:', error);
+    return [];
+  }
+}
+
+export async function upsertUploadedRouteReview(params: {
+  uploadedRouteId: string;
+  userId: string;
+  reviewerName?: string;
+  rating: number;
+  comment: string;
+}): Promise<void> {
+  const rating = Number(params.rating);
+  const comment = (params.comment || '').trim();
+  if (!params.uploadedRouteId || !params.userId || !comment || !Number.isFinite(rating) || rating < 1 || rating > 5) {
+    throw new Error('Invalid review payload');
+  }
+
+  const payload = {
+    uploaded_route_id: params.uploadedRouteId,
+    user_id: params.userId,
+    reviewer_name: params.reviewerName?.trim() || null,
+    rating,
+    comment,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase
+    .from('uploaded_route_reviews')
+    .upsert(payload, { onConflict: 'uploaded_route_id,user_id' });
+
+  if (error) {
+    console.warn('Failed to submit uploaded route review:', error);
+    throw error;
   }
 }

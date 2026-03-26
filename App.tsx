@@ -61,11 +61,66 @@ const App: React.FC = () => {
   const [myGroupHikes, setMyGroupHikes] = useState([]);
   const [newTeamId, setNewTeamId] = useState<string | null>(null);
   
-  // 🆕 检查 URL 中的 team 参数，如果有则显示表单而不是主界面
-  const [teamIdFromUrl] = useState(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get('team');
-  });
+  // 支持两种邀请链接：
+  // 1) ?team=<team_id> (current)
+  // 2) ?code=<invite_code> (legacy / teamService.generateInviteLink)
+  const [teamIdFromUrl, setTeamIdFromUrl] = useState<string | null>(null);
+  const [isResolvingInvite, setIsResolvingInvite] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const resolveInvite = async () => {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const directTeamId = params.get('team');
+        if (directTeamId) {
+          if (!cancelled) {
+            setTeamIdFromUrl(directTeamId);
+            setIsResolvingInvite(false);
+          }
+          return;
+        }
+
+        const inviteCode = params.get('code');
+        if (!inviteCode) {
+          if (!cancelled) {
+            setTeamIdFromUrl(null);
+            setIsResolvingInvite(false);
+          }
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from('teams')
+          .select('id')
+          .eq('invite_code', inviteCode.toUpperCase())
+          .single();
+
+        if (!cancelled) {
+          if (!error && data?.id) {
+            setTeamIdFromUrl(data.id);
+            const url = new URL(window.location.href);
+            url.searchParams.delete('code');
+            url.searchParams.set('team', data.id);
+            window.history.replaceState({}, document.title, `${url.pathname}${url.search}`);
+          } else {
+            setTeamIdFromUrl(null);
+          }
+          setIsResolvingInvite(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setTeamIdFromUrl(null);
+          setIsResolvingInvite(false);
+        }
+      }
+    };
+
+    resolveInvite();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   
   // Initialize session ID once (persistent across refreshes)
   const [sessionId] = useState(() => {
@@ -184,16 +239,48 @@ const App: React.FC = () => {
     }
   };
 
-  const handleDeleteGroupHike = async (groupId: string) => {
-    // Mark as completed for consistency with Done tag behavior
-    const { error: teamUpdateError } = await supabase
-      .from('teams')
-      .update({ status: 'completed', finished_at: new Date().toISOString() })
-      .eq('id', groupId);
-    if (teamUpdateError) {
-      console.error('Failed to mark team completed on exit:', teamUpdateError);
+  const handleDeleteGroupHike = async (groupId: string, isOrganizer: boolean) => {
+    if (!user?.id) throw new Error('User not authenticated');
+
+    if (isOrganizer) {
+      const { error } = await supabase.from('teams').delete().eq('id', groupId);
+      if (error) {
+        console.error('Failed to delete team:', error);
+        throw error;
+      }
+    } else {
+      const { error } = await supabase
+        .from('team_members')
+        .delete()
+        .eq('team_id', groupId)
+        .eq('user_id', user.id);
+      if (error) {
+        console.error('Failed to leave team:', error);
+        throw error;
+      }
     }
-    setMyGroupHikes(prev => prev.map(t => (t.id === groupId ? { ...t, status: 'completed' } : t)) as any);
+
+    setMyGroupHikes(prev => prev.filter((t: any) => t.id !== groupId) as any);
+    if (selectedTeamId === groupId) {
+      setSelectedTeamId(undefined);
+    }
+  };
+
+  const handleDeleteTrack = async (trackId: string) => {
+    if (!user?.id) throw new Error('User not authenticated');
+
+    const { error } = await supabase
+      .from('user_tracks')
+      .delete()
+      .eq('id', trackId)
+      .eq('user_id', user.id);
+
+    if (error) {
+      console.error('Failed to delete track:', error);
+      throw error;
+    }
+
+    setMyTracks(prev => prev.filter((t) => String(t.id) !== String(trackId)));
   };
 
   useEffect(() => {
@@ -331,25 +418,48 @@ const App: React.FC = () => {
 
   // 🆕 回顾历史记录
   const handleReviewTrack = (track: Track) => {
+    const normalizeLatLng = (a: any, b: any): [number, number] | null => {
+      if (typeof a !== 'number' || typeof b !== 'number') return null;
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+      const absA = Math.abs(a);
+      const absB = Math.abs(b);
+      if (absA <= 90 && absB <= 180) return [a, b];
+      if (absB <= 90 && absA <= 180) return [b, a];
+      return null;
+    };
+
     const normalizePoint = (p: any): [number, number] | null => {
       if (Array.isArray(p) && p.length >= 2) {
         const [a, b] = p;
-        if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b)) {
-          return [a, b];
-        }
+        return normalizeLatLng(a, b);
       }
       if (p && typeof p === 'object' && typeof p.lat === 'number' && typeof p.lng === 'number') {
-        if (Number.isFinite(p.lat) && Number.isFinite(p.lng)) {
-          return [p.lat, p.lng];
-        }
+        return normalizeLatLng(p.lat, p.lng);
+      }
+      if (p && typeof p === 'object' && typeof p.latitude === 'number' && typeof p.longitude === 'number') {
+        return normalizeLatLng(p.latitude, p.longitude);
+      }
+      if (p && typeof p === 'object' && p.type === 'Point' && Array.isArray(p.coordinates) && p.coordinates.length >= 2) {
+        return normalizeLatLng(p.coordinates[1], p.coordinates[0]);
       }
       return null;
     };
 
     const sanitizeCoords = (raw: any): [number, number][] => {
-      if (!Array.isArray(raw)) return [];
+      let candidate: any = raw;
+      if (candidate && typeof candidate === 'object') {
+        if (candidate.type === 'Feature' && candidate.geometry) {
+          candidate = candidate.geometry;
+        }
+        if (candidate.type === 'LineString' && Array.isArray(candidate.coordinates)) {
+          candidate = candidate.coordinates.map((pt: any) =>
+            Array.isArray(pt) && pt.length >= 2 ? [pt[1], pt[0]] : pt
+          );
+        }
+      }
+      if (!Array.isArray(candidate)) return [];
       const cleaned: [number, number][] = [];
-      raw.forEach((pt) => {
+      candidate.forEach((pt) => {
         const norm = normalizePoint(pt);
         if (norm) cleaned.push(norm);
       });
@@ -363,6 +473,8 @@ const App: React.FC = () => {
       if (typeof waypoints === 'string') waypoints = JSON.parse(waypoints);
     } catch {}
 
+    const normalizedCoords = sanitizeCoords(coords);
+
     const reviewRoute: Route = {
       id: track.id,
       name: track.name,
@@ -374,7 +486,7 @@ const App: React.FC = () => {
       startPoint: '',
       endPoint: '',
       elevationGain: 0,
-      coordinates: sanitizeCoords(coords)
+      coordinates: normalizedCoords
     };
     // 注入特殊标志
     (reviewRoute as any).isReview = true;
@@ -478,7 +590,7 @@ const App: React.FC = () => {
   const [guestCompletedTrack, setGuestCompletedTrack] = useState<Track | null>(null); // For non-logged in users after finishing a hike
 
   // --- 逻辑判断：如果未登录显示登录页 ---
-  if (loading) return <div className="h-screen flex items-center justify-center">Loading...</div>;
+  if (loading || isResolvingInvite) return <div className="h-screen flex items-center justify-center">Loading...</div>;
 
   const teamLinkMemberId =
     !user && teamIdFromUrl && typeof window !== 'undefined'
@@ -578,8 +690,8 @@ const App: React.FC = () => {
     if (guestActiveRoute) {
       return (
         <div className="flex flex-col h-screen bg-gray-50">
-          <main className="flex-1 overflow-y-auto no-scrollbar relative app-main app-safe-top pb-16">
-            <CompanionView 
+        <main className="flex-1 overflow-hidden no-scrollbar relative app-main app-safe-top">
+          <CompanionView 
               user={user || {id: 'guest', name: 'Guest', email: '', role: 'hiker'}} // Use logged in user if available
               activeRoute={guestActiveRoute}
               onSaveTrack={(track) => {
@@ -598,7 +710,16 @@ const App: React.FC = () => {
               sessionId={sessionId}
               teamId={teamIdFromUrl}
               isLeader={user?.id ? (myGroupHikes.find(h => h.id === teamIdFromUrl)?.isOrganizer || false) : false}
-              onBack={() => setGuestActiveRoute(null)}
+              onBack={() => {
+                window.history.replaceState({}, document.title, window.location.pathname);
+                setGuestActiveRoute(null);
+                if (user) {
+                  setActiveTab(Tab.PLANNING);
+                  setActiveRoute(null);
+                } else {
+                  window.location.href = '/';
+                }
+              }}
             />
           </main>
           {renderNav()}
@@ -611,6 +732,11 @@ const App: React.FC = () => {
         <main className="flex-1 overflow-y-auto no-scrollbar relative app-main app-safe-top pb-16">
           <TeamMemberPreferenceForm 
             teamId={teamIdFromUrl}
+            onSubmitSuccess={() => {
+              if (user?.id) {
+                loadUserTeams(user.id);
+              }
+            }}
             onStartHike={async () => {
                // User trying to start hike from group link
                try {
@@ -706,7 +832,7 @@ const App: React.FC = () => {
   // --- 逻辑判断：如果已登录显示主界面 ---
   return (
     <div className="flex flex-col h-screen bg-gray-50">
-      <main className="flex-1 overflow-y-auto no-scrollbar relative app-main app-safe-top pb-16">
+      <main className={`flex-1 no-scrollbar relative app-main app-safe-top ${activeTab === Tab.COMPANION ? 'overflow-hidden' : 'overflow-y-auto pb-16'}`}>
         <div style={{ display: activeTab === Tab.PLANNING ? 'block' : 'none', height: '100%' }}>
           <PlanningView 
             key={`explore-${exploreKey}`}
@@ -772,6 +898,7 @@ const App: React.FC = () => {
             myGroupHikes={myGroupHikes}
             onPublishTrack={handlePublishTrack}
             onDeleteGroupHike={handleDeleteGroupHike}
+            onDeleteTrack={handleDeleteTrack}
             onReviewTrack={handleReviewTrack}
             onPreviewTeamRoute={async (teamId) => {
               try {

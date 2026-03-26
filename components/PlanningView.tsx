@@ -9,6 +9,9 @@ import {
   fetchRouteById,
   saveGeneratedRoutesForUser,
   fetchUploadedRoutes,
+  fetchUploadedRouteReviews,
+  upsertUploadedRouteReview,
+  UploadedRouteReview,
   fetchAllRoutesFromDB,
   fetchEvents,
   HikingEvent,
@@ -47,6 +50,8 @@ import {
   X,
 } from 'lucide-react';
 import { supabase } from '../utils/supabaseClient';
+import { fetchHongKongCurrentWeather, formatWeatherForPrompt, type HKWeatherData } from '../services/hkWeatherService';
+import { getOrCreateGuestNickname, isGuestLikeUserId } from '../utils/guestIdentity';
 import { 
   DRAGONS_BACK_COORDINATES, 
   HK_TRAIL_SECTION_1_COORDINATES,
@@ -225,13 +230,6 @@ const MOCK_ROUTES: Route[] = [
   },
 ];
 
-const MOCK_REVIEWS = [
-  { id: 1, user: 'John D.', date: '2 days ago', rating: 5, comment: 'Amazing views from the ridge! The descent to Big Wave Bay was a bit steep but worth it.', avatar: 'male' },
-  { id: 2, user: 'Sarah M.', date: '1 week ago', rating: 4, comment: 'Great trail for a weekend hike. Highly recommend starting early to avoid the heat.', avatar: 'female' },
-  { id: 3, user: 'Mike R.', date: '3 days ago', rating: 5, comment: 'One of the best trails in HK. Well-marked and great scenery.', avatar: 'male' },
-  { id: 4, user: 'Emily L.', date: '5 days ago', rating: 4, comment: 'Beautiful scenery! The Peak section is always crowded but Section 1 is lovely.', avatar: 'female' }
-];
-
 const PlanningView: React.FC<PlanningViewProps> = ({
   routes = [], // 🆕 默认为空，避免闪烁 MOCK 数据
   onSelectRoute = (route: Route) => {},
@@ -257,6 +255,15 @@ const PlanningView: React.FC<PlanningViewProps> = ({
   const [showCommunityRoutes, setShowCommunityRoutes] = useState(false);
   const [dbEvents, setDbEvents] = useState<HikingEvent[]>([]);
   const [isLoadingEvents, setIsLoadingEvents] = useState(false);
+  const [communityReviews, setCommunityReviews] = useState<UploadedRouteReview[]>([]);
+  const [isLoadingCommunityReviews, setIsLoadingCommunityReviews] = useState(false);
+  const [communityReviewRating, setCommunityReviewRating] = useState<number>(5);
+  const [communityReviewComment, setCommunityReviewComment] = useState('');
+  const [isSubmittingCommunityReview, setIsSubmittingCommunityReview] = useState(false);
+  const [profileNickname, setProfileNickname] = useState('');
+  const [soloNicknameTouched, setSoloNicknameTouched] = useState(false);
+  const [groupNicknameTouched, setGroupNicknameTouched] = useState(false);
+  const [hkWeather, setHkWeather] = useState<HKWeatherData | null>(null);
 
   useEffect(() => {
     if (initialTeamId) {
@@ -347,6 +354,61 @@ const PlanningView: React.FC<PlanningViewProps> = ({
     }
   }, [showCommunityRoutes]);
 
+  useEffect(() => {
+    let mounted = true;
+    const loadWeather = async () => {
+      const data = await fetchHongKongCurrentWeather();
+      if (mounted) setHkWeather(data);
+    };
+    loadWeather();
+    const interval = setInterval(loadWeather, 10 * 60 * 1000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    const loadProfileNickname = async () => {
+      if (!currentUserId) return;
+      try {
+        const { data: profileData } = await supabase
+          .from('profiles')
+          .select('full_name, username')
+          .eq('id', currentUserId)
+          .single();
+
+        const nick = (profileData?.full_name || profileData?.username || '').trim();
+        if (!nick) return;
+        setProfileNickname(nick);
+
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('hikepal_nickname', nick);
+        }
+      } catch (e) {
+        // keep silent, fallback to local input/localStorage
+      }
+    };
+    loadProfileNickname();
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleNicknameUpdated = (event: Event) => {
+      const nickname = ((event as CustomEvent<{ nickname?: string }>).detail?.nickname || '').trim();
+      if (!nickname) return;
+      setProfileNickname(nickname);
+      if (!soloNicknameTouched) {
+        setSoloPreferences(prev => ({ ...prev, nickname }));
+      }
+      if (!groupNicknameTouched) {
+        setGroupOrganizerPreferences(prev => ({ ...prev, nickname }));
+      }
+    };
+    window.addEventListener('hikepal:nickname-updated', handleNicknameUpdated);
+    return () => window.removeEventListener('hikepal:nickname-updated', handleNicknameUpdated);
+  }, [soloNicknameTouched, groupNicknameTouched]);
+
   // Fetch official trails from backend
   useEffect(() => {
     const loadOfficialRoutes = async () => {
@@ -388,10 +450,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
   // Start Hiking / AI Search State
   const [soloPreferences, setSoloPreferences] = useState<PreferenceFormData>({
-    nickname:
-      (typeof window !== 'undefined' &&
-        (localStorage.getItem('hikepal_solo_nickname') || localStorage.getItem('hikepal_nickname'))) ||
-      '',
+    nickname: '',
     mood: '',
     difficulty: '' as any, // 🆕 无默认选项
     condition: '',
@@ -496,10 +555,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
   // 🆕 Group Organizer Preferences
   const [groupOrganizerPreferences, setGroupOrganizerPreferences] = useState<PreferenceFormData>({
-    nickname:
-      (typeof window !== 'undefined' &&
-        (localStorage.getItem('hikepal_group_nickname') || localStorage.getItem('hikepal_nickname'))) ||
-      '',
+    nickname: '',
     mood: '',
     difficulty: '' as any, // 🆕 无默认选项
     condition: '',
@@ -508,6 +564,41 @@ const PlanningView: React.FC<PlanningViewProps> = ({
   });
   const [showOrganizerPreferenceForm, setShowOrganizerPreferenceForm] = useState(false);
   const [showRouteInfoModal, setShowRouteInfoModal] = useState(false);
+
+  useEffect(() => {
+    if (!profileNickname || soloNicknameTouched) return;
+    setSoloPreferences(prev => ({ ...prev, nickname: profileNickname }));
+  }, [profileNickname, soloNicknameTouched]);
+
+  useEffect(() => {
+    if (!profileNickname || groupNicknameTouched) return;
+    setGroupOrganizerPreferences(prev => ({ ...prev, nickname: profileNickname }));
+  }, [profileNickname, groupNicknameTouched]);
+
+  useEffect(() => {
+    if (!isGuestLikeUserId(currentUserId)) return;
+    const guestNick = getOrCreateGuestNickname();
+    if (!soloNicknameTouched) {
+      setSoloPreferences(prev => ({ ...prev, nickname: guestNick }));
+    }
+    if (!groupNicknameTouched) {
+      setGroupOrganizerPreferences(prev => ({ ...prev, nickname: guestNick }));
+    }
+  }, [currentUserId, soloNicknameTouched, groupNicknameTouched]);
+
+  const handleSoloPreferenceChange = (next: PreferenceFormData) => {
+    if (next.nickname !== soloPreferences.nickname) {
+      setSoloNicknameTouched(true);
+    }
+    setSoloPreferences(next);
+  };
+
+  const handleGroupOrganizerPreferenceChange = (next: PreferenceFormData) => {
+    if (next.nickname !== groupOrganizerPreferences.nickname) {
+      setGroupNicknameTouched(true);
+    }
+    setGroupOrganizerPreferences(next);
+  };
 
   const detailMapRef = useRef<HTMLDivElement>(null);
   const detailMapInstanceRef = useRef<any>(null);
@@ -718,6 +809,14 @@ const PlanningView: React.FC<PlanningViewProps> = ({
     return routes.find(r => r.id === activeRouteId) || null;
   }, [activeRouteId, officialRoutes, uploadedRoutes, aiSearchState.matchedRoutes, routes]);
 
+  useEffect(() => {
+    if (activeRoute?.isUserPublished) {
+      loadCommunityReviews(activeRoute.id);
+    } else {
+      setCommunityReviews([]);
+    }
+  }, [activeRoute?.id, activeRoute?.isUserPublished]);
+
   // Ensure we scroll to top on major view changes, BUT keep position for route list
   useEffect(() => {
     // If we just opened a route detail or changed view mode, scroll to top
@@ -771,25 +870,55 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png').addTo(map);
 
+    const normalizeLatLng = (a: any, b: any): [number, number] | null => {
+      if (typeof a !== 'number' || typeof b !== 'number') return null;
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+      const absA = Math.abs(a);
+      const absB = Math.abs(b);
+      if (absA <= 90 && absB <= 180) return [a, b];
+      if (absB <= 90 && absA <= 180) return [b, a];
+      return null;
+    };
+
     const normalizePoint = (p: any): [number, number] | null => {
       if (Array.isArray(p) && p.length >= 2) {
         const [a, b] = p;
-        if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b)) {
-          return [a, b];
-        }
+        return normalizeLatLng(a, b);
       }
       if (p && typeof p === 'object' && typeof p.lat === 'number' && typeof p.lng === 'number') {
-        if (Number.isFinite(p.lat) && Number.isFinite(p.lng)) {
-          return [p.lat, p.lng];
-        }
+        return normalizeLatLng(p.lat, p.lng);
+      }
+      if (p && typeof p === 'object' && typeof p.latitude === 'number' && typeof p.longitude === 'number') {
+        return normalizeLatLng(p.latitude, p.longitude);
+      }
+      if (p && typeof p === 'object' && p.type === 'Point' && Array.isArray(p.coordinates) && p.coordinates.length >= 2) {
+        return normalizeLatLng(p.coordinates[1], p.coordinates[0]);
       }
       return null;
     };
 
     const sanitizeCoords = (raw: any): [number, number][] => {
-      if (!Array.isArray(raw)) return [];
+      let candidate: any = raw;
+      if (typeof candidate === 'string') {
+        try {
+          candidate = JSON.parse(candidate);
+        } catch {
+          return [];
+        }
+      }
+      if (candidate && typeof candidate === 'object') {
+        if (candidate.type === 'Feature' && candidate.geometry) {
+          candidate = candidate.geometry;
+        }
+        if (candidate.type === 'LineString' && Array.isArray(candidate.coordinates)) {
+          candidate = candidate.coordinates.map((pt: any) =>
+            Array.isArray(pt) && pt.length >= 2 ? [pt[1], pt[0]] : pt
+          );
+        }
+      }
+      if (!Array.isArray(candidate)) return [];
       const cleaned: [number, number][] = [];
-      raw.forEach((pt) => {
+      candidate.forEach((pt) => {
         const norm = normalizePoint(pt);
         if (norm) cleaned.push(norm);
       });
@@ -886,13 +1015,19 @@ const PlanningView: React.FC<PlanningViewProps> = ({
         if (waypoints && Array.isArray(waypoints)) {
             waypoints.forEach((wp: any) => {
                 if (wp && typeof wp.lat === 'number' && typeof wp.lng === 'number') {
+                    const isPhoto = wp.type === 'photo';
+                    const isEmotion = wp.type === 'emotion';
+                    const bgColor = isPhoto ? '#3B82F6' : isEmotion ? '#F97316' : '#EF4444';
+                    const markerText = isEmotion ? '📝' : '';
                     const icon = L.divIcon({
                         className: 'waypoint-icon',
-                        html: `<div style="background-color: ${wp.type === 'photo' ? '#3B82F6' : '#EF4444'}; width: 14px; height: 14px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>`,
-                        iconSize: [14, 14],
-                        iconAnchor: [7, 7]
+                        html: `<div style="background-color: ${bgColor}; width: 18px; height: 18px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; font-size:10px;">${markerText}</div>`,
+                        iconSize: [18, 18],
+                        iconAnchor: [9, 9]
                     });
-                    L.marker([wp.lat, wp.lng], { icon }).addTo(map).bindPopup(wp.note || (wp.type === 'photo' ? 'Photo Spot' : 'Waypoint'));
+                    L.marker([wp.lat, wp.lng], { icon }).addTo(map).bindPopup(
+                      wp.note || (isPhoto ? 'Photo Spot' : isEmotion ? 'Emotion Note' : 'Waypoint')
+                    );
                 }
             });
         }
@@ -1036,10 +1171,15 @@ const PlanningView: React.FC<PlanningViewProps> = ({
     }
 
     // 1. 创建用户偏好对象
+    const weatherContextText = formatWeatherForPrompt(hkWeather);
+    const mergedCondition = [soloPreferences.condition?.trim(), `Current HK weather: ${weatherContextText}`]
+      .filter(Boolean)
+      .join(' | ');
+
     const userPrefs: UserHikingPreferences = {
       mood: soloPreferences.mood as any,
       difficulty: soloPreferences.difficulty as any,
-      condition: soloPreferences.condition,
+      condition: mergedCondition,
       availableTime: soloPreferences.availableTime,
       maxDistance: soloPreferences.maxDistance,
       isSegmentBased: true // Force segment-based routing
@@ -1054,7 +1194,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
   try {
     // 3. 调用 AI 匹配函数
-    let matches = await findMatchingRoutes(userPrefs, 5);
+    let matches = await findMatchingRoutes(userPrefs, 5, hkWeather || undefined);
 
     // 3.5. 如果数据库没有数据，使用 MOCK_ROUTES 作为备选
     if (matches.length === 0) {
@@ -1096,7 +1236,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
         user_id: currentUserId,
         user_mood: soloPreferences.mood,
         user_difficulty: soloPreferences.difficulty,
-        user_condition: soloPreferences.condition,
+        user_condition: mergedCondition,
         matched_routes: matches.map(m => ({
           route_id: m.routeId,
           match_score: m.matchScore,
@@ -1153,6 +1293,101 @@ const PlanningView: React.FC<PlanningViewProps> = ({
     );
   };
 
+  const getWeatherRiskHints = (weather: HKWeatherData | null) => {
+    if (!weather) return [] as string[];
+    const hints: string[] = [];
+    const condition = (weather.condition || '').toLowerCase();
+
+    if (condition.includes('thunderstorm')) {
+      hints.push('⚠️ Thunderstorm risk: avoid exposed ridges and summit sections.');
+    } else if (condition.includes('rain') || condition.includes('shower')) {
+      hints.push('🌧️ Wet trail conditions: prefer routes with safer footing.');
+    }
+
+    if (typeof weather.rainfallMm === 'number' && weather.rainfallMm >= 10) {
+      hints.push('💦 Heavy rain observed: reduce technical/steep route choices.');
+    }
+
+    if (typeof weather.temp === 'number' && weather.temp >= 33) {
+      hints.push('🔥 High heat: choose shorter shaded routes and hydrate often.');
+    } else if (typeof weather.temp === 'number' && weather.temp <= 12) {
+      hints.push('🧥 Cool conditions: bring windproof layers.');
+    }
+
+    if (typeof weather.humidity === 'number' && weather.humidity >= 90 && typeof weather.temp === 'number' && weather.temp >= 30) {
+      hints.push('🥵 High humidity + heat: physical load may feel harder than usual.');
+    }
+
+    return hints.slice(0, 2);
+  };
+
+  const weatherRiskHints = React.useMemo(() => getWeatherRiskHints(hkWeather), [hkWeather]);
+
+  const formatRelativeDate = (iso: string) => {
+    if (!iso) return '';
+    const now = Date.now();
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t)) return '';
+    const diffMs = now - t;
+    const dayMs = 24 * 60 * 60 * 1000;
+    const hourMs = 60 * 60 * 1000;
+    if (diffMs < hourMs) {
+      const mins = Math.max(1, Math.round(diffMs / (60 * 1000)));
+      return `${mins}m ago`;
+    }
+    if (diffMs < dayMs) {
+      return `${Math.round(diffMs / hourMs)}h ago`;
+    }
+    const days = Math.round(diffMs / dayMs);
+    if (days <= 7) return `${days}d ago`;
+    return new Date(iso).toLocaleDateString();
+  };
+
+  const loadCommunityReviews = async (uploadedRouteId: string) => {
+    if (!uploadedRouteId) {
+      setCommunityReviews([]);
+      return;
+    }
+    setIsLoadingCommunityReviews(true);
+    try {
+      const rows = await fetchUploadedRouteReviews(uploadedRouteId);
+      setCommunityReviews(rows);
+    } finally {
+      setIsLoadingCommunityReviews(false);
+    }
+  };
+
+  const handleSubmitCommunityReview = async () => {
+    if (!activeRoute?.isUserPublished) return;
+    if (!currentUserId) {
+      alert('Please login first to post a review.');
+      return;
+    }
+    const comment = communityReviewComment.trim();
+    if (!comment) {
+      alert('Please write a short review.');
+      return;
+    }
+    setIsSubmittingCommunityReview(true);
+    try {
+      await upsertUploadedRouteReview({
+        uploadedRouteId: activeRoute.id,
+        userId: currentUserId,
+        reviewerName: profileNickname || soloPreferences.nickname || 'Hiker',
+        rating: communityReviewRating,
+        comment,
+      });
+      setCommunityReviewComment('');
+      await loadCommunityReviews(activeRoute.id);
+      alert('Thanks! Your review is posted.');
+    } catch (e) {
+      console.error(e);
+      alert('Failed to submit review. Please try again.');
+    } finally {
+      setIsSubmittingCommunityReview(false);
+    }
+  };
+
   const handleCreateGroup = async () => {
     if (!groupTitle) return;
     const size = typeof groupSize === 'number' ? groupSize : 4;
@@ -1177,6 +1412,33 @@ const PlanningView: React.FC<PlanningViewProps> = ({
         console.error('Error creating team in DB:', teamError);
         alert('Failed to create team. Please try again.');
         return;
+      }
+
+      // Ensure captain is recorded as a team member immediately so Profile can show this planning team later.
+      if (currentUserId) {
+        const organizerName =
+          groupOrganizerPreferences.nickname?.trim() ||
+          profileNickname?.trim() ||
+          (typeof window !== 'undefined'
+            ? (localStorage.getItem('hikepal_group_nickname') || localStorage.getItem('hikepal_nickname') || '').trim()
+            : '') ||
+          'Captain';
+        const { error: organizerUpsertError } = await supabase
+          .from('team_members')
+          .upsert(
+            {
+              team_id: teamData.id,
+              user_id: currentUserId,
+              user_name: organizerName,
+              role: 'organizer',
+              preferences_completed: false,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'team_id,user_id' }
+          );
+        if (organizerUpsertError) {
+          console.warn('Failed to upsert organizer member record:', organizerUpsertError);
+        }
       }
 
       // 2️⃣ 使用数据库的 UUID 作为 GroupHike ID
@@ -1326,24 +1588,49 @@ const PlanningView: React.FC<PlanningViewProps> = ({
   };
 
   // Handle route selection
-  const handleSelectRoute = async (routeId: string, forceIsLeader?: boolean) => {
-    console.log('🔘 handleSelectRoute called:', { routeId, forceIsLeader, isLeader, createdGroupId: createdGroup?.id });
+  const handleSelectRoute = async (
+    routeId: string,
+    forceIsLeader?: boolean,
+    routeHint?: RouteMatchScore
+  ) => {
+    const normalizedRouteId = String(routeId ?? '').trim();
+    console.log('🔘 handleSelectRoute called:', {
+      routeId,
+      normalizedRouteId,
+      forceIsLeader,
+      isLeader,
+      createdGroupId: createdGroup?.id
+    });
     try {
+      if (!normalizedRouteId) {
+        throw new Error('Route ID is empty');
+      }
+
       let selectedRoute: Route;
+      const toSafeNumber = (value: unknown, fallback: number = 0): number => {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : fallback;
+      };
 
       // 1. 如果是 AI 生成的动态路线 (starts with ai_gen_)
-      if (routeId.startsWith('ai_gen_')) {
-          const match = aiSearchState.matchedRoutes.find(r => r.routeId === routeId);
+      if (normalizedRouteId.startsWith('ai_gen_')) {
+          const match =
+            routeHint ||
+            aiSearchState.matchedRoutes.find(r => String(r.routeId) === normalizedRouteId) ||
+            groupRouteResult?.recommendedRoutes.find(r => String(r.routeId) === normalizedRouteId);
           if (!match) throw new Error('Route not found in state');
+
+          const totalDistance = toSafeNumber(match.totalDistance, 0);
+          const totalDuration = toSafeNumber(match.totalDuration, 0);
           
           selectedRoute = {
-            id: routeId,
+            id: normalizedRouteId,
             name: match.routeName,
             region: 'Hong Kong',
             description: match.matchReasons.join('. '),
-            distance: `${match.totalDistance.toFixed(1)}km`,
-            duration: `${Math.round(match.totalDuration / 60)}h`,
-            difficulty: match.difficulty,
+            distance: `${totalDistance.toFixed(1)}km`,
+            duration: `${Math.round(totalDuration / 60)}h`,
+            difficulty: toSafeNumber(match.difficulty, 3),
             startPoint: '{}',
             endPoint: '{}',
             elevationGain: 0,
@@ -1355,10 +1642,17 @@ const PlanningView: React.FC<PlanningViewProps> = ({
       // 2. 如果是从首页官方列表直接点击过来的，我们可能在 state 里已经有了它的基本信息
       else {
           // 先尝试从当前环境的官方路线里找（以确保不会因为数据库找不到而崩溃）
-          const existingRoute = officialRoutes.find(r => String(r.id) === String(routeId)) || uploadedRoutes.find(r => String(r.id) === String(routeId));
+          const existingRoute =
+            officialRoutes.find(r => String(r.id) === normalizedRouteId) ||
+            uploadedRoutes.find(r => String(r.id) === normalizedRouteId);
           
           // 获取深度信息（特别是 segments 拼接成的坐标）
-          const routeData = await fetchRouteById(routeId);
+          let routeData: ComposedRoute | null = null;
+          try {
+            routeData = await fetchRouteById(normalizedRouteId);
+          } catch (fetchError) {
+            console.warn('fetchRouteById failed, fallback to in-memory route only:', fetchError);
+          }
           
           if (!routeData && !existingRoute) {
              throw new Error('Route not found');
@@ -1378,16 +1672,20 @@ const PlanningView: React.FC<PlanningViewProps> = ({
           }
 
           selectedRoute = {
-            id: routeId,
+            id: normalizedRouteId,
             name: routeData?.name || existingRoute?.name || 'Unknown Route',
             region: routeData?.region || existingRoute?.region || 'Hong Kong',
             description: routeData?.description || existingRoute?.description || '',
-            distance: routeData ? `${routeData.total_distance?.toFixed(1) || 0}km` : existingRoute?.distance || '0km',
-            duration: routeData ? `${Math.round(routeData.total_duration_minutes / 60) || 0}h` : existingRoute?.duration || '0h',
+            distance: routeData
+              ? `${toSafeNumber(routeData.total_distance, 0).toFixed(1)}km`
+              : existingRoute?.distance || '0km',
+            duration: routeData
+              ? `${Math.round(toSafeNumber(routeData.total_duration_minutes, 0) / 60)}h`
+              : existingRoute?.duration || '0h',
             difficulty: routeData?.difficulty_level || existingRoute?.difficulty || 3,
             startPoint: '{}', 
             endPoint: '{}',
-            elevationGain: routeData?.total_elevation_gain || existingRoute?.elevationGain || 0,
+            elevationGain: toSafeNumber(routeData?.total_elevation_gain, existingRoute?.elevationGain || 0),
             isUserPublished: existingRoute?.isUserPublished || false,
             coordinates: finalCoordinates,
             segments: routeData?.segments || (existingRoute as any)?.segments || [], // 🆕 Pass segments for mapping
@@ -1395,10 +1693,10 @@ const PlanningView: React.FC<PlanningViewProps> = ({
       }
 
       // 4. 记录选择
-      if (aiSearchState.userPrefs && currentUserId && !routeId.startsWith('ai_gen_')) {
+      if (aiSearchState.userPrefs && currentUserId && !normalizedRouteId.startsWith('ai_gen_')) {
         try {
           await supabase.from('ai_route_matches').update({
-            top_route_id: routeId,
+            top_route_id: normalizedRouteId,
             used_at: new Date().toISOString(),
           }).eq('user_id', currentUserId);
         } catch (e) {
@@ -1643,7 +1941,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                 
                 <PreferenceFormPanel
                   data={soloPreferences}
-                  onChange={setSoloPreferences}
+                  onChange={handleSoloPreferenceChange}
                   showTitle={false}
                 />
 
@@ -1675,6 +1973,18 @@ const PlanningView: React.FC<PlanningViewProps> = ({
       <span className="text-xs bg-hike-green text-white px-2 py-1 rounded-full font-bold">
         {aiSearchState.matchedRoutes.length} match
       </span>
+      <button
+        onClick={() =>
+          setAiSearchState(prev => ({
+            ...prev,
+            matchedRoutes: [],
+            selectedRouteId: null,
+          }))
+        }
+        className="ml-auto text-xs font-bold text-hike-green hover:underline"
+      >
+        Edit Preferences
+      </button>
     </div>
     <div className="space-y-3">
       {aiSearchState.matchedRoutes.map((match, idx) => (
@@ -1723,6 +2033,17 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                 </span>
               ))}
             </div>
+
+            {weatherRiskHints.length > 0 && (
+              <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
+                <div className="text-[10px] font-bold text-amber-800 uppercase mb-1">Weather Risk</div>
+                <div className="space-y-1">
+                  {weatherRiskHints.map((hint, idx) => (
+                    <div key={idx} className="text-[11px] text-amber-900 leading-snug">{hint}</div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* 路线统计 */}
             <div className="flex gap-4 text-xs text-gray-600 font-medium">
@@ -2109,7 +2430,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                           <div className="space-y-6 pb-4">
                             <PreferenceFormPanel
                               data={groupOrganizerPreferences}
-                              onChange={setGroupOrganizerPreferences}
+                              onChange={handleGroupOrganizerPreferenceChange}
                               showTitle={false}
                             />
                           </div>
@@ -2137,10 +2458,14 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
                                 const { data: { user } } = await supabase.auth.getUser();
                                 
-                                // Create stable user ID - use user ID if logged in, otherwise use team ID + "organizer"
-                                const userId = user?.id || `organizer_${createdGroup.id}`;
-                                const userEmail = user?.email || `organizer_${createdGroup.id}@hikepal.local`;
-                                const userName = groupOrganizerPreferences.nickname.trim() || user?.user_metadata?.name || 'Organizer';
+                                // Prefer logged-in app user id so this team is always visible in Profile later.
+                                const userId = currentUserId || user?.id || `organizer_${createdGroup.id}`;
+                                const userEmail = user?.email || `${userId}@hikepal.local`;
+                                const userName =
+                                  groupOrganizerPreferences.nickname.trim() ||
+                                  profileNickname?.trim() ||
+                                  user?.user_metadata?.name ||
+                                  'Organizer';
 
                                 const userPrefs: UserHikingPreferences = {
                                   mood: groupOrganizerPreferences.mood as any,
@@ -2162,7 +2487,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
                                 const { error, data } = await supabase
                                   .from('team_members')
-                                  .insert([
+                                  .upsert(
                                     {
                                       team_id: createdGroup.id,
                                       user_id: userId,
@@ -2175,8 +2500,10 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                       role: 'organizer',
                                       preferences_completed: true,
                                       preferences_completed_at: new Date().toISOString(),
+                                      updated_at: new Date().toISOString(),
                                     },
-                                  ])
+                                    { onConflict: 'team_id,user_id' }
+                                  )
                                   .select();
 
                                 if (error) {
@@ -2187,13 +2514,6 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                     hint: error.hint,
                                   });
                                   
-                                  // Check if it's a duplicate entry (organizer already exists)
-                                  if (error.code === '23505') {
-                                    console.log('ℹ️ Organizer preferences already exist, closing form');
-                                    setShowOrganizerPreferenceForm(false);
-                                    return;
-                                  }
-
                                   // RLS policy error
                                   if (error.code === '42501') {
                                     alert('Permission denied. Please try again or refresh the page.');
@@ -2236,12 +2556,20 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                     </div>
                   )}
 
-                  <div className="bg-white p-5 rounded-2xl shadow-md border border-gray-100 text-left">
-                    <h3 className="font-bold text-lg mb-4 flex justify-between items-center">
-                      Your Group: {createdGroup.title}
-                      <button onClick={() => { setCreatedGroup(null); setShowCreateGroupForm(true); }} className="text-sm font-semibold text-hike-green hover:underline">Clear</button>
-                    </h3>
-                    <div className="space-y-3">
+                      <div className="bg-white p-5 rounded-2xl shadow-md border border-gray-100 text-left">
+                        <h3 className="font-bold text-lg mb-4 flex justify-between items-center">
+                          Your Group: {createdGroup.title}
+                          <button onClick={() => { setCreatedGroup(null); setShowCreateGroupForm(true); }} className="text-sm font-semibold text-hike-green hover:underline">Clear</button>
+                        </h3>
+                        {isLeader && (
+                          <button
+                            onClick={() => setShowOrganizerPreferenceForm(true)}
+                            className="w-full mb-3 bg-white text-hike-green border border-hike-green/30 py-2.5 rounded-xl font-bold hover:bg-hike-light/50 transition"
+                          >
+                            Edit My Preferences
+                          </button>
+                        )}
+                        <div className="space-y-3">
                       {/* Team Info Card */}
                       <div className="bg-gradient-to-r from-hike-green/10 to-emerald-100 rounded-2xl p-5 border border-hike-green/20">
                         <h2 className="font-bold text-lg text-gray-900 mb-2">Team Info</h2>
@@ -2425,7 +2753,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                         matchedRoutes: groupRouteResult.recommendedRoutes
                                       }));
                                       // 2. 直接开始预览
-                                      handleSelectRoute(route.routeId);
+                                      handleSelectRoute(route.routeId, undefined, route);
                                   }}
                                   className={`bg-white rounded-lg p-3 border cursor-pointer active:scale-[0.98] transition-all duration-300 ${
                                     activeRouteId === route.routeId
@@ -2460,6 +2788,17 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                         </span>
                                       ))}
                                     </div>
+
+                                    {weatherRiskHints.length > 0 && (
+                                      <div className="my-2 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
+                                        <div className="text-[10px] font-bold text-amber-800 uppercase mb-1">Weather Risk</div>
+                                        <div className="space-y-1">
+                                          {weatherRiskHints.map((hint, hintIdx) => (
+                                            <div key={hintIdx} className="text-[11px] text-amber-900 leading-snug">{hint}</div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
 
                                     <div className="flex gap-4 text-xs text-gray-600 font-medium">
                                       <span className="flex items-center gap-1">
@@ -2649,9 +2988,24 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                if (data) canPassId = true;
                             }
                             
-                            const snapshotCoords = (activeRoute.coordinates && activeRoute.coordinates.length > 0)
+                            let snapshotCoords = (activeRoute.coordinates && activeRoute.coordinates.length > 0)
                               ? activeRoute.coordinates
                               : mergeSegmentCoordinates((activeRoute as any).segments || []);
+
+                            if ((!snapshotCoords || snapshotCoords.length === 0) && activeRoute.id) {
+                              const deepRoute = await fetchRouteById(activeRoute.id);
+                              if (deepRoute) {
+                                snapshotCoords = (deepRoute.full_coordinates && deepRoute.full_coordinates.length > 0)
+                                  ? deepRoute.full_coordinates
+                                  : mergeSegmentCoordinates(deepRoute.segments || []);
+                              }
+                            }
+
+                            const { data: memberRows } = await supabase
+                              .from('team_members')
+                              .select('user_id, user_name, role, preferences_completed, user_preferences, joined_at')
+                              .eq('team_id', createdGroup.id)
+                              .order('joined_at', { ascending: true });
 
                             const targetRouteData = {
                               id: activeRoute.id,
@@ -2663,7 +3017,10 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                               difficulty: activeRoute.difficulty,
                               elevationGain: (activeRoute as any).elevationGain || 0,
                               coordinates: snapshotCoords,
-                              segments: (activeRoute as any).segments || []
+                              segments: (activeRoute as any).segments || [],
+                              confirmed_at: new Date().toISOString(),
+                              confirmed_by: currentUserId || null,
+                              team_members_snapshot: Array.isArray(memberRows) ? memberRows : []
                             };
 
                             const { error } = await supabase
@@ -2768,6 +3125,14 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
                     <button 
                       onClick={() => {
+                        handleSelectRoute(activeRoute.id);
+                      }}
+                      className="w-full bg-hike-green text-white py-3 rounded-full font-bold shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-2"
+                    >
+                      <Compass size={20} /> Start This Hike
+                    </button>
+                    <button 
+                      onClick={() => {
                         const track: Track = {
                           id: activeRoute.id,
                           name: activeRoute.name,
@@ -2856,35 +3221,68 @@ const PlanningView: React.FC<PlanningViewProps> = ({
             )}
 
             {/* Comments */}
-             <div className="border-t pt-6">
+            {activeRoute.isUserPublished && (
+              <div className="border-t pt-6">
                 <h3 className="font-bold text-lg mb-4 text-gray-800 flex justify-between items-center">
-                  Hikers' Reviews <span className="text-sm font-normal text-gray-500">{MOCK_REVIEWS.length * 32} reviews</span>
+                  Hikers' Reviews <span className="text-sm font-normal text-gray-500">{communityReviews.length} reviews</span>
                 </h3>
-                <div className="space-y-6">
-                   {MOCK_REVIEWS.map(review => (
-                     <div key={review.id} className="flex gap-4">
+
+                <div className="bg-gray-50 border border-gray-100 rounded-2xl p-4 mb-5">
+                  <div className="text-xs font-bold text-gray-500 uppercase mb-2">Your rating</div>
+                  <div className="flex gap-1 mb-3">
+                    {[1, 2, 3, 4, 5].map(score => (
+                      <button
+                        key={score}
+                        onClick={() => setCommunityReviewRating(score)}
+                        className="text-yellow-500"
+                        title={`${score} stars`}
+                      >
+                        <Star size={18} fill={score <= communityReviewRating ? 'currentColor' : 'none'} className={score <= communityReviewRating ? '' : 'text-gray-300'} />
+                      </button>
+                    ))}
+                  </div>
+                  <textarea
+                    value={communityReviewComment}
+                    onChange={e => setCommunityReviewComment(e.target.value)}
+                    placeholder="Share your experience on this route..."
+                    className="w-full bg-white border border-gray-200 rounded-xl p-3 text-sm min-h-[90px] outline-none focus:border-hike-green"
+                  />
+                  <button
+                    onClick={handleSubmitCommunityReview}
+                    disabled={isSubmittingCommunityReview}
+                    className="w-full mt-3 bg-blue-600 text-white py-2.5 rounded-xl font-bold disabled:opacity-60"
+                  >
+                    {isSubmittingCommunityReview ? 'Posting...' : 'Post Review'}
+                  </button>
+                </div>
+
+                {isLoadingCommunityReviews ? (
+                  <div className="text-sm text-gray-500">Loading reviews...</div>
+                ) : communityReviews.length === 0 ? (
+                  <div className="text-sm text-gray-500 bg-gray-50 border border-gray-100 rounded-xl p-4">No reviews yet. Be the first to share your feedback.</div>
+                ) : (
+                  <div className="space-y-6">
+                    {communityReviews.map(review => (
+                      <div key={review.id} className="flex gap-4">
                         <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center shrink-0 border border-gray-200">
                           <User size={20} className="text-gray-400" />
                         </div>
                         <div className="flex-1">
-                           <div className="flex justify-between items-start mb-1">
-                              <div>
-                                <span className="font-bold text-sm text-gray-800">{review.user}</span>
-                                <div className="flex mt-0.5">
-                                  {renderRating(review.rating)}
-                                </div>
-                              </div>
-                              <span className="text-[10px] text-gray-400 font-medium">{review.date}</span>
-                           </div>
-                           <p className="text-sm text-gray-600 leading-relaxed">{review.comment}</p>
+                          <div className="flex justify-between items-start mb-1">
+                            <div>
+                              <span className="font-bold text-sm text-gray-800">{review.reviewer_name || 'Hiker'}</span>
+                              <div className="flex mt-0.5">{renderRating(Number(review.rating || 0))}</div>
+                            </div>
+                            <span className="text-[10px] text-gray-400 font-medium">{formatRelativeDate(review.created_at)}</span>
+                          </div>
+                          <p className="text-sm text-gray-600 leading-relaxed">{review.comment}</p>
                         </div>
-                     </div>
-                   ))}
-                </div>
-                <button className="w-full mt-6 py-3 border border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50 transition">
-                  Show More Reviews
-                </button>
-             </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -2900,6 +3298,16 @@ const PlanningView: React.FC<PlanningViewProps> = ({
         teamName={createdGroup.title}
         teamDescription={createdGroup.description}
         maxMembers={createdGroup.maxMembers}
+        onEditPreferences={() => {
+          if (isLeader) {
+            setShowOrganizerPreferenceForm(true);
+            setShowTeamDetailsView(false);
+            setViewMode('start_hiking');
+            setStartSelection('group');
+          } else {
+            alert('Please edit your preferences from the team invite form link.');
+          }
+        }}
         onBack={async () => {
           setShowTeamDetailsView(false);
           // If route confirmed and user clicks back, they might want to see the route
@@ -2937,7 +3345,9 @@ const PlanningView: React.FC<PlanningViewProps> = ({
             <MapPin size={20} className="text-hike-green" />
             <span>{selectedCity}</span>
           </div>
-          <div className="text-sm text-gray-500">Sunny, 24°C</div>
+          <div className="text-sm text-gray-500">
+            {hkWeather ? `${hkWeather.condition}, ${hkWeather.temp}°C` : 'Loading weather...'}
+          </div>
         </div>
         
         {/* Functional Buttons (Active Now) */}
