@@ -40,6 +40,7 @@ export interface Waypoint {
   type: 'photo' | 'marker' | 'emotion' | 'reminder';
   note?: string;
   imageUrl?: string;
+  uploadedRouteImageId?: string; // New field to link waypoints to uploaded_route_images
 }
 
 export interface Track {

@@ -3389,8 +3389,8 @@ const PlanningView: React.FC<PlanningViewProps> = ({
             onChange={e => handleRouteSearch(e.target.value)}
             className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:border-hike-green text-sm"
           />
-          <p className="text-[10px] text-gray-400 mt-1.5 px-1 font-medium italic">
-            💡 Hint: Enter trail name to filter results below
+          <p className="text-xs text-black-600 mt-2 px-1 font-semibold">
+            💡Hint: Official Trails and Community Shared Route can only be searched through keyword.
           </p>
         </div>
         <div className="flex justify-between items-center mb-2">
