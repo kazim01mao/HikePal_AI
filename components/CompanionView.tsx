@@ -2030,17 +2030,17 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                 <input value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} placeholder="Ask AI..." className="flex-1 bg-gray-100 rounded-full px-4 py-2 text-sm outline-none" />
                 <button onClick={() => handleSendMessage()} className="p-2 bg-hike-green text-white rounded-full shadow-sm"><Send size={18} /></button>
              </div>
-           ) : (
+         ) : (
              <button
                onClick={() => { setChatType('ai'); setPanelMode('chat'); }}
-               className="mx-3 sm:mx-4 mb-[calc(4.75rem+env(safe-area-inset-bottom))] sm:mb-[calc(5rem+env(safe-area-inset-bottom))] h-7 sm:h-8 rounded-full bg-white/95 border border-gray-200 shadow-sm text-gray-400 text-[11px] sm:text-xs flex items-center justify-center gap-2 hover:text-gray-600 transition-colors"
+               className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 w-14 h-14 rounded-full bg-gradient-to-br from-hike-green to-emerald-600 text-white shadow-2xl shadow-emerald-500/40 flex items-center justify-center active:scale-95 transition-all border-2 border-white/30 z-[600]"
+               title="Ask AI"
              >
-               <span className="w-2 h-2 bg-hike-green rounded-full"></span>
-               Tap to ask AI
+               <Sparkles size={24} />
              </button>
            )
          )}
-      </div>
+       </div>
 
       {/* Upload Modal (Moved here to ensure it's on top) */}
       {showUploadModal && (
