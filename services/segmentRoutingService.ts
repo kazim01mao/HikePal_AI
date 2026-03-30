@@ -79,6 +79,7 @@ export interface RouteMatchScore {
   totalDuration: number;
   difficulty: number;
   tags?: string[];
+  description?: string; // 路线特点描述
 }
 
 const MAX_SEGMENT_JOIN_GAP_METERS = 250;
@@ -618,7 +619,8 @@ export async function findMatchingRoutes(
                         totalDistance: computedDistance || genRoute.total_distance || 0,
                         totalDuration: computedDuration || genRoute.total_duration || 0,
                         difficulty: computedDifficulty || genRoute.difficulty || 3,
-                        tags: genRoute.tags || []
+                        tags: genRoute.tags || [],
+                        description: genRoute.description || 'A recommended hiking route based on your preferences'
                     };
                 }).filter((r: RouteMatchScore | null) => r !== null);
             }

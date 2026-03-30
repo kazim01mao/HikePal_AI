@@ -118,7 +118,7 @@ export const generateRoutesWithAI = async (
   userMood: string,
   userDifficulty: string,
   userCondition: string,
-  weatherContext?: { temp?: number; humidity?: number; condition?: string; rainfallMm?: number }
+  weatherContext?: { temp?: number; humidity?: number; condition?: string; rainfallMm?: number; sunrise?: string; sunset?: string }
 ): Promise<any[]> => {
   try {
     try {
@@ -192,6 +192,8 @@ User Preferences:
 - Difficulty Level: ${userDifficulty}
 - Specific Condition: ${userCondition}
 - Current Hong Kong Weather: ${weatherContext?.condition || 'Unknown'}, ${weatherContext?.temp ?? 'N/A'}C, humidity ${weatherContext?.humidity ?? 'N/A'}%, rainfall ${weatherContext?.rainfallMm ?? 'N/A'}mm
+- Sunrise: ${weatherContext?.sunrise || '06:30'}
+- Sunset: ${weatherContext?.sunset || '18:30'}
 
 Available Trail Segments (total: ${segmentsInfo.length}):
 ${JSON.stringify(segmentsInfo, null, 2)}
@@ -202,16 +204,19 @@ IMPORTANT INSTRUCTIONS:
 3. Preference: Head-to-tail connected segments (where one segment's end is near another's start) are better than a single isolated segment.
 4. Each combination should be unique.
 5. Each route should have a simple name like "Recommended Route 1", "Recommended Route 2", etc.
->>>>+++ REPLACE
-
-5. Always include the route index number in the name (e.g., Route 1, Route 2, Route 3)
-6. Estimate distance and duration accurately
+6. Always include the route index number in the name (e.g., Route 1, Route 2, Route 3)
+7. Estimate distance and duration accurately
+8. For each route description, include:
+   - A brief overview of the route (20-50 words)
+   - Gear/clothing recommendations based on current weather (e.g., "Bring waterproof jacket" if rainy, "Wear breathable clothing" if hot)
+   - Timing suggestions based on sunrise/sunset (e.g., "Start early to avoid afternoon heat", "Perfect for sunset views")
+   - Safety considerations if relevant
 
 Return ONLY a valid JSON array, no other text:
 [
   {
     "name": "Recommended Route 1",
-    "description": "Short description of the route combination",
+    "description": "A scenic coastal hike with panoramic ocean views. Perfect for photography enthusiasts. Bring sunscreen and a hat as it's mostly exposed. Start by 3pm to catch the sunset over the water.",
     "segment_ids": ["id1", "id2"] or [] if single segment,
     "total_distance": estimated_km_number,
     "total_duration": estimated_minutes_number,

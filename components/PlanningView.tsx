@@ -2021,6 +2021,15 @@ const PlanningView: React.FC<PlanningViewProps> = ({
               </div>
             </div>
 
+            {/* 路线描述 */}
+            {match.description && (
+              <div className="mb-3">
+                <p className="text-xs font-semibold text-gray-800 leading-relaxed line-clamp-3">
+                  {match.description}
+                </p>
+              </div>
+            )}
+
             {/* 匹配原因 */}
             <div className="mb-3 flex flex-wrap gap-1">
               {/* 优先把命中的 Tag 或者前 2-3 个核心 Tag 展示，避免堆砌 */}
@@ -3354,9 +3363,21 @@ const PlanningView: React.FC<PlanningViewProps> = ({
             <MapPin size={20} className="text-hike-green" />
             <span>{selectedCity}</span>
           </div>
-          <div className="text-sm text-gray-500">
-            {hkWeather ? `${hkWeather.condition}, ${hkWeather.temp}°C` : 'Loading weather...'}
-          </div>
+        <div className="text-sm text-gray-500 flex items-center gap-2">
+          {hkWeather ? (
+            <>
+              <span>{hkWeather.condition}</span>
+              <span>•</span>
+              <span>{hkWeather.temp}°C</span>
+              <span>•</span>
+              <span>sunrise {hkWeather.sunrise || '06:30'}</span>
+              <span>•</span>
+              <span>sunset {hkWeather.sunset || '18:30'}</span>
+            </>
+          ) : (
+            'Loading weather...'
+          )}
+        </div>
         </div>
         
         {/* Functional Buttons (Active Now) */}

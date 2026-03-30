@@ -1641,6 +1641,20 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         <button onClick={onBack} className="absolute top-6 left-4 z-[500] p-3 bg-white shadow-lg rounded-full border"><ArrowLeft size={20}/></button>
       )}
 
+      {/* Review Mode Navigation Button */}
+      {isReviewMode && (
+        <div className="absolute top-6 left-4 z-[500]">
+          {/* Back Button - Returns to previous screen */}
+          <button 
+            onClick={onBack} 
+            className="p-3 bg-white shadow-lg rounded-full border hover:bg-gray-50 transition-colors"
+            title="Back to previous screen"
+          >
+            <ArrowLeft size={20}/>
+          </button>
+        </div>
+      )}
+
 
       {/* Save Dialog */}
       {showSaveDialog && (
