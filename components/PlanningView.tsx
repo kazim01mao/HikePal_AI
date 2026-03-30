@@ -1017,17 +1017,26 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                 if (wp && typeof wp.lat === 'number' && typeof wp.lng === 'number') {
                     const isPhoto = wp.type === 'photo';
                     const isEmotion = wp.type === 'emotion';
-                    const bgColor = isPhoto ? '#3B82F6' : isEmotion ? '#F97316' : '#EF4444';
-                    const markerText = isEmotion ? '📝' : '';
+                    const bgColor = isPhoto ? '#3B82F6' : isEmotion ? '#EA580C' : '#F59E0B';
+                    const markerText = isEmotion && wp.imageUrl ? '📸' : isEmotion ? '📝' : isPhoto ? '📸' : '📍';
                     const icon = L.divIcon({
                         className: 'waypoint-icon',
-                        html: `<div style="background-color: ${bgColor}; width: 18px; height: 18px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; font-size:10px;">${markerText}</div>`,
-                        iconSize: [18, 18],
-                        iconAnchor: [9, 9]
+                        html: `<div style="background-color: ${bgColor}; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; font-size:10px;">${markerText}</div>`,
+                        iconSize: [20, 20],
+                        iconAnchor: [10, 10]
                     });
-                    L.marker([wp.lat, wp.lng], { icon }).addTo(map).bindPopup(
-                      wp.note || (isPhoto ? 'Photo Spot' : isEmotion ? 'Emotion Note' : 'Waypoint')
-                    );
+                    
+                    const escaped = (txt: string) => String(txt || '').replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"').replace(/'/g, '&#39;');
+                    const popupContent = `
+                      <div style="font-family: system-ui, sans-serif; padding: 4px; max-width: 220px;">
+                        <div style="font-size: 14px; font-weight: bold; color: ${bgColor}; margin-bottom: 4px;">
+                          ${escaped(wp.note || (isPhoto ? 'Photo Spot' : isEmotion ? 'Emotion Note' : 'Waypoint'))}
+                        </div>
+                        ${wp.imageUrl ? `<img src="${escaped(wp.imageUrl)}" alt="Waypoint Image" style="width: 100%; border-radius: 8px; margin-bottom: 8px; max-height: 120px; object-fit: cover;" />` : ''}
+                      </div>
+                    `;
+                    
+                    L.marker([wp.lat, wp.lng], { icon }).addTo(map).bindPopup(popupContent);
                 }
             });
         }
@@ -2535,24 +2544,24 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                   error?.hint ||
                                   'Unknown error';
                                 const errorCode = error?.code ? ` [${error.code}]` : '';
-                                const errorDetail = error?.details ? `\nDetails: ${error.details}` : '';
-                                const errorHint = error?.hint ? `\nHint: ${error.hint}` : '';
-                                console.error('Full error:', { message: errorMsg, code: error?.code, details: error?.details, hint: error?.hint });
-                                alert(`Failed to save preferences${errorCode}:\n${errorMsg}${errorDetail}${errorHint}\n\nPlease try again.`);
-                              }
-                            }}
-                            className="flex-1 bg-hike-green text-white py-3.5 rounded-2xl font-bold shadow-lg active:scale-95 transition-all hover:bg-green-600"
-                          >
-                            ✅ Save My Preferences
-                          </button>
-                          <button
-                            onClick={() => setShowOrganizerPreferenceForm(false)}
-                            className="flex-1 bg-gray-100 text-gray-700 py-3.5 rounded-2xl font-bold hover:bg-gray-200 transition"
-                          >
-                            Skip for Now
-                          </button>
-                        </div>
-                      </div>
+          const errorDetail = error?.details ? `\nDetails: ${error.details}` : '';
+          const errorHint = error?.hint ? `\nHint: ${error.hint}` : '';
+          console.error('Full error:', { message: errorMsg, code: error?.code, details: error?.details, hint: error?.hint });
+          alert(`Failed to save preferences${errorCode}:\n${errorMsg}${errorDetail}${errorHint}\n\nPlease try again.`);
+        }
+      }}
+      className="flex-1 bg-hike-green text-white py-3.5 rounded-2xl font-bold shadow-lg active:scale-95 transition-all hover:bg-green-600"
+    >
+      ✅ Save My Preferences
+    </button>
+    <button
+      onClick={() => setShowOrganizerPreferenceForm(false)}
+      className="flex-1 bg-gray-100 text-gray-700 py-3.5 rounded-2xl font-bold hover:bg-gray-200 transition"
+    >
+      Skip for Now
+    </button>
+  </div>
+</div>
                     </div>
                   )}
 

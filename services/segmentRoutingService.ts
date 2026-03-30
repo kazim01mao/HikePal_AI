@@ -1050,6 +1050,16 @@ export async function fetchUploadedRoutes(): Promise<any[]> {
     return data.map((record: any) => {
       const routeData = record.route_data || {};
       const normalizedCoords = sanitizeTrackCoords(routeData.coordinates);
+      
+      // Extract image URL from route_data or use placeholder
+      const imageUrl = routeData.imageUrl || 
+                      routeData.cover_url || 
+                      routeData.cover_image || 
+                      (routeData.waypoints && routeData.waypoints.length > 0 
+                        ? routeData.waypoints.find((wp: any) => wp.imageUrl)?.imageUrl 
+                        : null) ||
+                      'https://images.unsplash.com/photo-1551632811-561732d1e306?q=80&w=2070&auto=format&fit=crop';
+      
       return {
         id: record.id,
         name: record.name,
@@ -1063,7 +1073,7 @@ export async function fetchUploadedRoutes(): Promise<any[]> {
         is_segment_based: false,
         created_by: record.user_id,
         created_at: record.created_at,
-        imageUrl: 'https://images.unsplash.com/photo-1551632811-561732d1e306?q=80&w=2070&auto=format&fit=crop', // Placeholder for now
+        imageUrl: imageUrl,
         full_coordinates: normalizedCoords, // Normalize to [[lat,lng], ...] for stable rendering
         waypoints: routeData.waypoints || [], // 🆕 Grab waypoints
         // Keep original data for reference

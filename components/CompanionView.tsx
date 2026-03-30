@@ -163,6 +163,7 @@ interface EmotionNote {
   content: string;
   latitude: number;
   longitude: number;
+  imageUrl?: string;
   created_at?: string | null;
 }
 
@@ -228,6 +229,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const alertedItemsRef = useRef<Set<string>>(new Set());
   const [showAddNote, setShowAddNote] = useState(false);
   const [noteContent, setNoteContent] = useState('');
+  const [noteImage, setNoteImage] = useState<File | null>(null);
+  const [noteImagePreview, setNoteImagePreview] = useState<string | null>(null);
   const [isNoteSubmitting, setIsNoteSubmitting] = useState(false);
   const [emotionNotes, setEmotionNotes] = useState<EmotionNote[]>([]);
   const [includeEmotionNotesOnSave, setIncludeEmotionNotesOnSave] = useState(true);
@@ -424,16 +427,17 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
     if (!includeEmotionNotes) return reminderWaypoints;
 
-    const emotionWaypoints = emotionNotes
-      .filter(note => typeof note.latitude === 'number' && typeof note.longitude === 'number')
-      .map(note => ({
-        id: `emotion-${note.id}`,
-        lat: note.latitude,
-        lng: note.longitude,
-        note: note.content,
-        type: 'emotion',
-        timestamp: note.created_at ? new Date(note.created_at) : new Date()
-      } as unknown as Waypoint));
+      const emotionWaypoints = emotionNotes
+        .filter(note => typeof note.latitude === 'number' && typeof note.longitude === 'number')
+        .map(note => ({
+          id: `emotion-${note.id}`,
+          lat: note.latitude,
+          lng: note.longitude,
+          note: note.content,
+          type: 'emotion',
+          imageUrl: note.imageUrl,
+          timestamp: note.created_at ? new Date(note.created_at) : new Date()
+        } as unknown as Waypoint));
 
     return [...reminderWaypoints, ...emotionWaypoints];
   };
@@ -445,8 +449,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     }
 
     try {
-      const scopeCol = 'id, team_id, route_id, user_id, user_name, content, latitude, longitude, created_at';
-      const fallbackCol = 'id, team_id, user_id, user_name, content, latitude, longitude, created_at';
+      const scopeCol = 'id, team_id, route_id, user_id, user_name, content, latitude, longitude, image_url, created_at';
+      const fallbackCol = 'id, team_id, user_id, user_name, content, latitude, longitude, image_url, created_at';
 
       let query = supabase
         .from('team_member_emotions')
@@ -455,6 +459,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       query = teamId ? query.eq('team_id', teamId) : query.eq('user_id', userId);
 
       let { data, error } = await query;
+      
+      // Fallback 1: Missing route_id
       if (error && isMissingRouteScopeColumnError(error)) {
         let fallbackQuery = supabase
           .from('team_member_emotions')
@@ -465,8 +471,30 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         data = fallback.data as any;
         error = fallback.error;
       }
+      
+      // Fallback 2: Missing image_url
+      if (error && (error.code === '42703' || String(error.message).includes('image_url'))) {
+        const oldCol = 'id, team_id, route_id, user_id, user_name, content, latitude, longitude, created_at';
+        let queryOld = supabase.from('team_member_emotions').select(oldCol).order('created_at', { ascending: true });
+        queryOld = teamId ? queryOld.eq('team_id', teamId) : queryOld.eq('user_id', userId);
+        const fallbackOld = await queryOld;
+        
+        // Fallback 3: Missing BOTH route_id AND image_url
+        if (fallbackOld.error && isMissingRouteScopeColumnError(fallbackOld.error)) {
+           const oldestCol = 'id, team_id, user_id, user_name, content, latitude, longitude, created_at';
+           let queryOldest = supabase.from('team_member_emotions').select(oldestCol).order('created_at', { ascending: true });
+           queryOldest = teamId ? queryOldest.eq('team_id', teamId) : queryOldest.eq('user_id', userId);
+           const fallbackOldest = await queryOldest;
+           data = fallbackOldest.data as any;
+           error = fallbackOldest.error;
+        } else {
+           data = fallbackOld.data as any;
+           error = fallbackOld.error;
+        }
+      }
+      
       if (error) throw error;
-      const notes = Array.isArray(data) ? (data as EmotionNote[]) : [];
+      const notes = Array.isArray(data) ? data.map(n => ({...n, imageUrl: n.image_url})) as EmotionNote[] : [];
       setEmotionNotes(filterNotesForRoute(notes, activeRouteId));
     } catch (err) {
       console.warn('Failed to load emotion notes:', err);
@@ -1086,7 +1114,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       const displayName = (note.user_name || '').trim() || (isSelf ? 'Me' : 'Teammate');
       const markerColor = isSelf ? '#F97316' : '#14B8A6';
       const icon = L.divIcon({
-        html: `<div style="background-color: ${markerColor}; color: white; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display:flex; align-items:center; justify-content:center; font-size:12px; box-shadow: 0 2px 4px rgba(0,0,0,0.35);">📝</div>`,
+        html: `<div style="background-color: ${markerColor}; color: white; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display:flex; align-items:center; justify-content:center; font-size:12px; box-shadow: 0 2px 4px rgba(0,0,0,0.35);">${note.imageUrl ? '📸' : '�'}</div>`,
         className: '',
         iconSize: [24, 24],
         iconAnchor: [12, 12],
@@ -1098,6 +1126,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
           <div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">
             <strong style="color: ${markerColor};">${escaped(displayName)}</strong> · ${escaped(createdAt)}
           </div>
+          ${note.imageUrl ? `<img src="${escaped(note.imageUrl)}" alt="Emotion" style="width: 100%; border-radius: 8px; margin-bottom: 8px; max-height: 120px; object-fit: cover;" />` : ''}
           <div style="font-size: 13px; color: #111827; line-height: 1.4;">
             ${escaped(note.content)}
           </div>
@@ -1354,6 +1383,45 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     if (!content || !activeRouteId) return;
     setIsNoteSubmitting(true);
     try {
+      let imageUrl = null;
+      if (noteImage) {
+        try {
+          const fileExt = noteImage.name.split('.').pop() || 'jpg';
+          const fileName = `${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
+          const filePath = `${userId}/${fileName}`;
+
+          console.log('Attempting to upload image to emotion-images bucket...');
+          
+          // Try to upload the image
+          const { error: uploadError } = await supabase.storage
+            .from('emotion-images')
+            .upload(filePath, noteImage);
+
+          if (uploadError) {
+            console.error('Error uploading image:', uploadError);
+            
+            // Check if the error is due to bucket not existing or permission issues
+            if (uploadError.message?.includes('bucket') || uploadError.message?.includes('not found')) {
+              console.warn('Bucket may not exist or have proper permissions. Skipping image upload.');
+              // We'll still save the note without the image
+            } else {
+              // Other upload errors
+              console.warn('Image upload failed, but continuing without image:', uploadError.message);
+            }
+          } else {
+            // Success! Get the public URL
+            const { data: { publicUrl } } = supabase.storage
+              .from('emotion-images')
+              .getPublicUrl(filePath);
+            imageUrl = publicUrl;
+            console.log('Image uploaded successfully:', imageUrl);
+          }
+        } catch (uploadError) {
+          console.error('Unexpected error during image upload:', uploadError);
+          // Continue without image
+        }
+      }
+
       const payload = {
         team_id: teamId,
         route_id: activeRouteId,
@@ -1362,14 +1430,34 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         content,
         latitude: userPos ? userPos[0] : 0,
         longitude: userPos ? userPos[1] : 0,
+        image_url: imageUrl,
         created_at: new Date().toISOString()
       };
 
       let { data, error } = await supabase
         .from('team_member_emotions')
         .insert(payload)
-        .select('id, team_id, route_id, user_id, user_name, content, latitude, longitude, created_at')
+        .select('id, team_id, route_id, user_id, user_name, content, latitude, longitude, image_url, created_at')
         .single();
+
+      if (error) {
+        // Fallback for missing image_url column
+        const fallbackPayload = {
+          team_id: teamId,
+          route_id: activeRouteId,
+          user_id: userId,
+          user_name: getSelfDisplayName(),
+          content,
+          latitude: userPos ? userPos[0] : 0,
+          longitude: userPos ? userPos[1] : 0,
+          created_at: new Date().toISOString()
+        };
+        const oldCol = 'id, team_id, route_id, user_id, user_name, content, latitude, longitude, created_at';
+        let queryOld = supabase.from('team_member_emotions').insert(fallbackPayload).select(oldCol).single();
+        const fallbackOld = await queryOld;
+        data = fallbackOld.data as any;
+        error = fallbackOld.error;
+      }
 
       // Backward compatibility: DB may not have route_id column yet.
       if (error && isMissingRouteScopeColumnError(error)) {
@@ -1382,9 +1470,10 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
             content: payload.content,
             latitude: payload.latitude,
             longitude: payload.longitude,
+            image_url: payload.image_url,
             created_at: payload.created_at
           })
-          .select('id, team_id, user_id, user_name, content, latitude, longitude, created_at')
+          .select('id, team_id, user_id, user_name, content, latitude, longitude, image_url, created_at')
           .single();
         data = fallback.data as any;
         error = fallback.error;
@@ -1392,9 +1481,13 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
       if (error) throw error;
       if (data) {
+        const newNote: EmotionNote = {
+          ...data,
+          imageUrl: data.image_url
+        };
         setEmotionNotes(prev => {
-          if (prev.find(note => note.id === data.id)) return prev;
-          return [...prev, data as EmotionNote];
+          if (prev.find(note => note.id === newNote.id)) return prev;
+          return [...prev, newNote];
         });
       }
       
@@ -1408,6 +1501,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       setTimeout(() => setToast(null), 3000);
       
       setNoteContent('');
+      setNoteImage(null);
+      setNoteImagePreview(null);
       setShowAddNote(false);
     } catch (e: any) {
       if (isEmotionNotePermissionError(e)) {
@@ -1432,6 +1527,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         setToast({ message: 'Saved locally (no DB permission)', type: 'info' });
         setTimeout(() => setToast(null), 3000);
         setNoteContent('');
+        setNoteImage(null);
+        setNoteImagePreview(null);
         setShowAddNote(false);
         return;
       }
@@ -1869,9 +1966,42 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                        placeholder="Write something about this spot..." 
                        className="w-full bg-transparent border-none outline-none resize-none h-32 text-gray-700 font-medium"
                     />
+                    
+                    {noteImagePreview ? (
+                      <div className="relative mt-2">
+                        <img src={noteImagePreview} alt="Preview" className="w-full h-32 object-cover rounded-xl border border-gray-200" />
+                        <button 
+                          onClick={() => { setNoteImage(null); setNoteImagePreview(null); }}
+                          className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full hover:bg-black/70"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="mt-2 flex justify-end">
+                        <label className="cursor-pointer text-gray-500 hover:text-hike-green transition-colors flex items-center gap-1 text-sm font-bold bg-white px-3 py-1.5 rounded-full border border-gray-200 shadow-sm">
+                          <Camera size={16} />
+                          <span>Add Photo</span>
+                          <input 
+                            type="file" 
+                            accept="image/*" 
+                            className="hidden" 
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                setNoteImage(file);
+                                const reader = new FileReader();
+                                reader.onloadend = () => setNoteImagePreview(reader.result as string);
+                                reader.readAsDataURL(file);
+                              }
+                            }} 
+                          />
+                        </label>
+                      </div>
+                    )}
                  </div>
                  
-                 <div className="flex gap-2">
+                 <div className="flex flex-wrap gap-2">
                     {['🏔️ Great', '😴 Tired', '📸 Scenic', '💧 Need Water'].map(tag => (
                        <button 
                           key={tag} 
