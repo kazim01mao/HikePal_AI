@@ -1555,11 +1555,11 @@ const PlanningView: React.FC<PlanningViewProps> = ({
       }
 
       // 调用 AI 分析并推荐路线
-      const result = await recommendRoutesForGroup(group.id, memberPreferences);
+      const result = await recommendRoutesForGroup(group.id, memberPreferences, hkWeather || undefined);
       setGroupRouteResult(result);
     } catch (error) {
-      console.error('Error analyzing group preferences:', error);
-      setGroupAnalysisError(error instanceof Error ? error.message : 'Failed to analyze group preferences');
+      console.error("Error analyzing group preferences:", error);
+      setGroupAnalysisError(error instanceof Error ? error.message : "Failed to analyze group preferences");
     } finally {
       setIsAnalyzingGroupPrefs(false);
       setIsLoadingTeamProgress(false);
@@ -2785,6 +2785,15 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                       {route.matchScore}% Match
                                     </span>
                                   </div>
+
+                                  {/* 路线描述 */}
+                                  {route.description && (
+                                    <div className="mb-3">
+                                      <p className="text-xs font-semibold text-gray-800 leading-relaxed line-clamp-3">
+                                        {route.description}
+                                      </p>
+                                    </div>
+                                  )}
 
                                     {/* Matches tags formatting like Solo trip */}
                                     <div className="my-2 flex flex-wrap gap-1">
