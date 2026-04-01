@@ -971,7 +971,7 @@ export async function fetchEvents(): Promise<HikingEvent[]> {
       date: formattedDate,
       location: event.location_name || event.location,
       participants: event.current_participants || 0,
-      imageUrl: event.image_url || `https://picsum.photos/400/200?random=${Math.random()}`,
+      imageUrl: event.cover_url || event.image_url || `https://picsum.photos/400/200?random=${Math.random()}`,
       trail_id: event.trail_id,
       description: event.description,
       routeData: routeData
