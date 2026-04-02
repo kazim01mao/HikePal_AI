@@ -207,12 +207,14 @@ interface CompanionViewProps {
 
 const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSaveTrack, userId, sessionId, onBack, teamId, isLeader }) => {
   // --- States ---
-  const [cardPos, setCardPos] = useState({ x: 16, y: 100 });
+  const [cardPos, setCardPos] = useState({ x: 96, y: 100 });
   const [cardSize, setCardSize] = useState({ w: 280, h: 360 });
+  const [isSummaryCardCollapsed, setIsSummaryCardCollapsed] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const dragStartRef = useRef({ x: 0, y: 0, cardX: 0, cardY: 0 });
   const resizeStartRef = useRef({ x: 0, y: 0, w: 280, h: 360 });
+  const dragMovedRef = useRef(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
@@ -1019,7 +1021,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     reminderMarkersRef.current.forEach(m => m.remove());
     reminderMarkersRef.current = [];
 
-    if (isReviewMode && !showRemindersInReview) return;
+    const canToggleRemindersOverlay = isReviewMode || !hasStartedHike;
+    if (canToggleRemindersOverlay && !showRemindersInReview) return;
     if (reminderInfo.length === 0) return;
 
     let markersToShow = reminderInfo;
@@ -1110,7 +1113,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         reminderMarkersRef.current.push(marker);
       }
     });
-  }, [reminderInfo, mapInstanceRef.current, isRecording, activeRoute, isReviewMode, showRemindersInReview]);
+  }, [reminderInfo, mapInstanceRef.current, isRecording, activeRoute, isReviewMode, showRemindersInReview, hasStartedHike]);
 
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -1350,6 +1353,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
   const handleCardDragStart = (e: React.PointerEvent) => {
     e.preventDefault();
+    dragMovedRef.current = false;
     setIsDragging(true);
     dragStartRef.current = {
       x: e.clientX,
@@ -1357,6 +1361,15 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       cardX: cardPos.x,
       cardY: cardPos.y
     };
+  };
+
+  const handleCardHeaderClick = () => {
+    // If pointer moved, this interaction was a drag, not a click-to-collapse.
+    if (dragMovedRef.current) {
+      dragMovedRef.current = false;
+      return;
+    }
+    setIsSummaryCardCollapsed(prev => !prev);
   };
 
   const handleResizeStart = (e: React.PointerEvent) => {
@@ -1386,6 +1399,9 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       if (!isDragging) return;
       const dx = e.clientX - dragStartRef.current.x;
       const dy = e.clientY - dragStartRef.current.y;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        dragMovedRef.current = true;
+      }
       setCardPos({
         x: dragStartRef.current.cardX + dx,
         y: dragStartRef.current.cardY + dy
@@ -1550,11 +1566,19 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
               console.warn('Image upload failed, but continuing without image:', uploadError.message);
             }
           } else {
-            // Success! Get the public URL
-            const { data: { publicUrl } } = supabase.storage
+            // Success! Prefer a long-lived signed URL so teammates can view photos even if bucket isn't public.
+            const signed = await supabase.storage
               .from('emotion-images')
-              .getPublicUrl(filePath);
-            imageUrl = publicUrl;
+              .createSignedUrl(filePath, 60 * 60 * 24 * 365); // 1 year
+
+            if (!signed.error && signed.data?.signedUrl) {
+              imageUrl = signed.data.signedUrl;
+            } else {
+              const { data: { publicUrl } } = supabase.storage
+                .from('emotion-images')
+                .getPublicUrl(filePath);
+              imageUrl = publicUrl;
+            }
             console.log('Image uploaded successfully:', imageUrl);
           }
         } catch (uploadError) {
@@ -1903,11 +1927,6 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
       <div className={`relative transition-all duration-300 ${panelMode === 'map' ? 'h-[72%] sm:h-[70%] md:h-[66%]' : 'h-[44%] sm:h-[42%]'}`}>
         <div ref={mapContainerRef} className="absolute inset-0 bg-gray-200 z-0" />
         
-        {!activeRoute && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[500] bg-yellow-500/90 text-white px-4 py-2 rounded-full text-xs font-bold shadow-lg backdrop-blur-md">
-            DEMO MODE
-          </div>
-        )}
 
         {isReviewMode && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[500] bg-gray-900/90 text-white px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 backdrop-blur-md">
@@ -1947,17 +1966,32 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
           >
              <div
                ref={cardRef}
-               style={{ width: cardSize.w, height: cardSize.h }}
+               style={{ width: cardSize.w, height: isSummaryCardCollapsed ? 96 : cardSize.h }}
                className="bg-white/95 backdrop-blur-md rounded-3xl p-5 shadow-2xl border border-white/40 overflow-auto relative"
              >
                 <div 
                    onPointerDown={handleCardDragStart}
+                   onClick={handleCardHeaderClick}
                    className="cursor-move flex flex-col items-center mb-4 bg-gray-50/50 -m-5 p-4 rounded-t-3xl border-b border-gray-100 touch-none"
                 >
                    <div className="w-8 h-1 bg-gray-300 rounded-full mb-3"></div>
-                   <h2 className="text-base font-black text-gray-900 leading-tight text-center">{activeRoute.name}</h2>
+                   <div className="w-full flex items-center justify-between gap-3">
+                     <h2 className="text-base font-black text-gray-900 leading-tight text-center flex-1">{activeRoute.name}</h2>
+                     <button
+                       type="button"
+                       onClick={(e) => {
+                         e.stopPropagation();
+                         setIsSummaryCardCollapsed(prev => !prev);
+                       }}
+                       className="text-gray-500 hover:text-gray-700 p-1 rounded-md"
+                       title={isSummaryCardCollapsed ? 'Expand' : 'Collapse'}
+                     >
+                       <ChevronRight size={16} className={`transition-transform ${isSummaryCardCollapsed ? '-rotate-90' : 'rotate-90'}`} />
+                     </button>
+                   </div>
                 </div>
                 
+                {!isSummaryCardCollapsed && (
                 <div className="mt-4 space-y-4">
                    <div className="grid grid-cols-2 gap-2">
                       <div className="bg-hike-light/50 p-2.5 rounded-xl text-center">
@@ -2079,14 +2113,17 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
                       )}
                    </div>
                 </div>
+                )}
 
-                <div
-                  onPointerDown={handleResizeStart}
-                  className="absolute right-2 bottom-2 h-6 w-6 rounded-full border border-gray-200 bg-white/90 shadow-sm cursor-se-resize touch-none flex items-center justify-center text-gray-500"
-                  title="Resize"
-                >
-                  <MoveDiagonal2 size={12} />
-                </div>
+                {!isSummaryCardCollapsed && (
+                  <div
+                    onPointerDown={handleResizeStart}
+                    className="absolute right-2 bottom-2 h-6 w-6 rounded-full border border-gray-200 bg-white/90 shadow-sm cursor-se-resize touch-none flex items-center justify-center text-gray-500"
+                    title="Resize"
+                  >
+                    <MoveDiagonal2 size={12} />
+                  </div>
+                )}
              </div>
           </div>
         )}
@@ -2136,7 +2173,7 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
         {activeRoute && (
           <div className="absolute top-24 left-4 z-[500] flex flex-col gap-2">
             <button onClick={() => setShowRouteInfo(true)} className="p-3 bg-white/90 rounded-full shadow-lg text-hike-green border border-white/40 backdrop-blur-sm"><Info size={24} /></button>
-            {isReviewMode && (
+            {(isReviewMode || !hasStartedHike) && (
               <button
                 onClick={() => setShowRemindersInReview(prev => !prev)}
                 className={`p-3 rounded-full shadow-lg border border-white/40 backdrop-blur-sm ${
@@ -2334,14 +2371,18 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
                <span className={isRefreshingTeam ? 'animate-pulse' : ''}>Team ({teamId ? actualTeamSize : (activeRoute ? 1 : 0)})</span>
             </button>
          </div>
-         <div ref={chatScrollRef} className={`flex-1 min-h-0 overflow-y-auto bg-gray-50 select-text ${panelMode === 'map' ? 'p-2.5 sm:p-3' : 'p-3 sm:p-4'}`}>
+         <div
+           ref={chatScrollRef}
+           className={`flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y bg-gray-50 select-text ${panelMode === 'map' ? 'p-2.5 sm:p-3' : 'p-3 sm:p-4'}`}
+           style={{ WebkitOverflowScrolling: 'touch' }}
+         >
             {chatType === 'team' ? (
                <div className="space-y-4 select-text">
                   <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 select-text">
                      <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2"><Users size={14}/> {teamId ? 'Team Members' : (activeRoute ? 'Solo Hiker' : 'No Team')}</h4>
                      <div className="space-y-3 select-text">
                         {!activeRoute && !teamId && (
-                           <div className="text-sm text-gray-500 text-center py-4">Demo Mode - No active team</div>
+                           <div className="text-sm text-gray-500 text-center py-4">No active team</div>
                         )}
                         {teamMembers.map((member, idx) => (
                            <div key={idx} className="p-3 bg-gray-50 rounded-xl border flex flex-col gap-2 select-text">
@@ -2375,7 +2416,7 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
                   ).map((m, i) => (
                     <div key={i} className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'} select-text`}>
                        <div
-                         className={`max-w-[85%] p-3 rounded-2xl text-sm whitespace-pre-wrap select-text ${m.sender === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-white text-gray-800 border rounded-bl-none shadow-sm'} ${panelMode === 'map' ? 'line-clamp-3' : ''}`}
+                         className={`max-w-[85%] p-3 rounded-2xl text-sm whitespace-pre-wrap select-text ${m.sender === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-white text-gray-800 border rounded-bl-none shadow-sm'}`}
                        >
                          {renderMarkdown(m.text)}
                        </div>

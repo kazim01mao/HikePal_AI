@@ -233,21 +233,39 @@ const App: React.FC = () => {
           };
         };
 
-        // 2. Save to Supabase
-        const { data: insertedTrack, error } = await supabase
+        // 2. Save to Supabase (compat fallback for schemas without difficulty column)
+        const baseTrackPayload: any = {
+          user_id: user.id,
+          name: track.name,
+          date: track.date,
+          duration: track.duration,
+          distance: track.distance,
+          coordinates: track.coordinates, // JSONB
+          waypoints: track.waypoints
+        };
+        const withDifficultyPayload = { ...baseTrackPayload, difficulty: track.difficulty };
+
+        let insertedTrack: { id?: string } | null = null;
+        let error: any = null;
+
+        const insertWithDifficulty = await supabase
           .from('user_tracks')
-          .insert({
-            user_id: user.id,
-            name: track.name,
-            date: track.date,
-            duration: track.duration,
-            distance: track.distance,
-            coordinates: track.coordinates, // JSONB
-            waypoints: track.waypoints,
-            difficulty: track.difficulty
-          })
+          .insert(withDifficultyPayload)
           .select('id')
           .single();
+
+        insertedTrack = insertWithDifficulty.data as any;
+        error = insertWithDifficulty.error;
+
+        if (error && (String(error.code) === '42703' || String(error.message || '').toLowerCase().includes('difficulty'))) {
+          const fallbackInsert = await supabase
+            .from('user_tracks')
+            .insert(baseTrackPayload)
+            .select('id')
+            .single();
+          insertedTrack = fallbackInsert.data as any;
+          error = fallbackInsert.error;
+        }
 
         if (error) {
           console.error('Error saving track to Supabase:', error);
@@ -435,6 +453,66 @@ const App: React.FC = () => {
       const durationVal = typeof track.duration === 'string'
         ? parseFloat(track.duration.replace(/[^0-9.]/g, '')) || 0
         : Number(track.duration || 0);
+      const baseWaypoints = Array.isArray((track as any).waypoints) ? (track as any).waypoints : [];
+
+      // Backward compatibility:
+      // older records may have photos only in team_member_emotions, not in user_tracks.waypoints.
+      let legacyEmotionRows: any[] = [];
+      try {
+        const routeId = (track as any).routeId || null;
+        if (routeId) {
+          const { data } = await supabase
+            .from('team_member_emotions')
+            .select('id, route_id, content, latitude, longitude, image_url, created_at')
+            .eq('user_id', user.id)
+            .eq('route_id', String(routeId))
+            .not('image_url', 'is', null)
+            .order('created_at', { ascending: true })
+            .limit(100);
+          legacyEmotionRows = data || [];
+        } else if (track.date) {
+          const center = new Date(track.date).getTime();
+          const from = new Date(center - 12 * 60 * 60 * 1000).toISOString();
+          const to = new Date(center + 12 * 60 * 60 * 1000).toISOString();
+          const { data } = await supabase
+            .from('team_member_emotions')
+            .select('id, route_id, content, latitude, longitude, image_url, created_at')
+            .eq('user_id', user.id)
+            .not('image_url', 'is', null)
+            .gte('created_at', from)
+            .lte('created_at', to)
+            .order('created_at', { ascending: true })
+            .limit(100);
+          legacyEmotionRows = data || [];
+        }
+      } catch (legacyErr) {
+        console.warn('Failed to load legacy team_member_emotions for publish fallback:', legacyErr);
+      }
+
+      const legacyWaypoints = legacyEmotionRows
+        .filter((row: any) => typeof row.latitude === 'number' && typeof row.longitude === 'number')
+        .map((row: any) => ({
+          id: `legacy-emotion-${row.id}`,
+          lat: row.latitude,
+          lng: row.longitude,
+          type: 'emotion',
+          note: row.content || 'Emotion Note',
+          imageUrl: row.image_url
+        }));
+
+      const dedupeKey = (wp: any) =>
+        `${Number(wp.lat).toFixed(6)}|${Number(wp.lng).toFixed(6)}|${String(wp.imageUrl || '')}`;
+      const mergedWaypoints = [...baseWaypoints, ...legacyWaypoints].filter((wp: any) =>
+        wp && typeof wp.lat === 'number' && typeof wp.lng === 'number'
+      );
+      const seen = new Set<string>();
+      const normalizedWaypoints = mergedWaypoints.filter((wp: any) => {
+        const key = dedupeKey(wp);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      const firstImage = normalizedWaypoints.find((wp: any) => typeof wp.imageUrl === 'string' && wp.imageUrl.trim().length > 0)?.imageUrl || null;
 
       await uploadRouteToCommunity(user.id, {
         name: track.name || 'My Hike',
@@ -449,7 +527,10 @@ const App: React.FC = () => {
           difficulty: track.difficulty || 3,
           elevationGain: (track as any).elevationGain || 0,
           coordinates: track.coordinates || [],
-          waypoints: (track as any).waypoints || []
+          waypoints: normalizedWaypoints,
+          imageUrl: firstImage,
+          cover_image: firstImage,
+          cover_url: firstImage
         }
       });
     } catch (e) {

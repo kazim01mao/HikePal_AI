@@ -866,13 +866,45 @@ export async function uploadRouteToCommunity(
   if (!userId) return;
 
   try {
+    const toPublicEmotionImageUrl = (url: string | null): string | null => {
+      if (!url || typeof url !== 'string') return null;
+      const publicPrefix = '/storage/v1/object/public/emotion-images/';
+      const signPrefix = '/storage/v1/object/sign/emotion-images/';
+
+      const fromPublic = url.includes(publicPrefix)
+        ? url.split(publicPrefix)[1]?.split('?')[0]
+        : null;
+      const fromSigned = url.includes(signPrefix)
+        ? url.split(signPrefix)[1]?.split('?')[0]
+        : null;
+      const objectPath = decodeURIComponent((fromPublic || fromSigned || '').trim());
+      if (!objectPath) return url;
+
+      const { data } = supabase.storage.from('emotion-images').getPublicUrl(objectPath);
+      return data?.publicUrl || url;
+    };
+
+    const routeData = route.route_data || {};
+    const waypoints = Array.isArray(routeData.waypoints) ? routeData.waypoints : [];
+    const firstUploadedImageRaw =
+      waypoints.find((wp: any) => typeof wp?.imageUrl === 'string' && wp.imageUrl.trim().length > 0)?.imageUrl || null;
+    const firstUploadedImage = toPublicEmotionImageUrl(firstUploadedImageRaw);
+
+    const normalizedRouteData = {
+      ...routeData,
+      // Force community cover image to the first user-uploaded photo when available.
+      imageUrl: firstUploadedImage || routeData.imageUrl || routeData.cover_image || routeData.cover_url || null,
+      cover_image: firstUploadedImage || routeData.cover_image || routeData.imageUrl || routeData.cover_url || null,
+      cover_url: firstUploadedImage || routeData.cover_url || routeData.cover_image || routeData.imageUrl || null,
+    };
+
     const { error } = await supabase.from('uploaded_routes').insert([{ 
       user_id: userId,
       name: route.name,
       description: route.description || null,
       region: route.region || null,
       tags: route.tags || null,
-      route_data: route.route_data,
+      route_data: normalizedRouteData,
       is_published: true,
     }]);
     if (error) throw error;
