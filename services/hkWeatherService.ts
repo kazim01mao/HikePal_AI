@@ -5,6 +5,8 @@ export interface HKWeatherData {
   iconId?: number;
   rainfallMm?: number;
   fetchedAt: string;
+  sunrise?: string;
+  sunset?: string;
 }
 
 const mapHkoIconToCondition = (iconId?: number): string => {
@@ -27,14 +29,39 @@ export const getFallbackHKWeather = (): HKWeatherData => ({
 
 export async function fetchHongKongCurrentWeather(): Promise<HKWeatherData> {
   try {
-    const response = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=en');
-    if (!response.ok) throw new Error(`HKO weather request failed: ${response.status}`);
-    const data = await response.json();
+    // Fetch current weather
+    const weatherResponse = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=en');
+    if (!weatherResponse.ok) throw new Error(`HKO weather request failed: ${weatherResponse.status}`);
+    const weatherData = await weatherResponse.json();
 
-    const iconId = Array.isArray(data?.icon) && data.icon.length > 0 ? Number(data.icon[0]) : undefined;
-    const temp = Number(data?.temperature?.data?.[0]?.value);
-    const humidity = Number(data?.humidity?.data?.[0]?.value);
-    const rainfallMm = Number(data?.rainfall?.data?.[0]?.max ?? 0);
+    const iconId = Array.isArray(weatherData?.icon) && weatherData.icon.length > 0 ? Number(weatherData.icon[0]) : undefined;
+    const temp = Number(weatherData?.temperature?.data?.[0]?.value);
+    const humidity = Number(weatherData?.humidity?.data?.[0]?.value);
+    const rainfallMm = Number(weatherData?.rainfall?.data?.[0]?.max ?? 0);
+
+    // Fetch sunrise/sunset data
+    let sunrise = '06:30';
+    let sunset = '18:30';
+    try {
+      const today = new Date();
+      const year = today.getFullYear();
+      const month = String(today.getMonth() + 1).padStart(2, '0');
+      const day = String(today.getDate()).padStart(2, '0');
+      
+      const sunResponse = await fetch(`https://data.weather.gov.hk/weatherAPI/opendata/opendata.php?dataType=RS&rformat=json&year=${year}&month=${month}`);
+      if (sunResponse.ok) {
+        const sunData = await sunResponse.json();
+        if (sunData && sunData.data && Array.isArray(sunData.data)) {
+          const todayData = sunData.data.find((d: any) => d.Date === `${year}${month}${day}`);
+          if (todayData) {
+            sunrise = todayData.Sunrise || sunrise;
+            sunset = todayData.Sunset || sunset;
+          }
+        }
+      }
+    } catch (sunError) {
+      console.warn('Failed to fetch sunrise/sunset data, using defaults:', sunError);
+    }
 
     return {
       temp: Number.isFinite(temp) ? temp : 26,
@@ -42,6 +69,8 @@ export async function fetchHongKongCurrentWeather(): Promise<HKWeatherData> {
       condition: mapHkoIconToCondition(iconId),
       iconId,
       rainfallMm: Number.isFinite(rainfallMm) ? rainfallMm : 0,
+      sunrise,
+      sunset,
       fetchedAt: new Date().toISOString(),
     };
   } catch (error) {
@@ -55,5 +84,7 @@ export const formatWeatherForPrompt = (weather?: Partial<HKWeatherData> | null):
   const temp = typeof weather.temp === 'number' ? `${weather.temp}C` : 'N/A';
   const humidity = typeof weather.humidity === 'number' ? `${weather.humidity}%` : 'N/A';
   const rainfall = typeof weather.rainfallMm === 'number' ? `${weather.rainfallMm}mm` : 'N/A';
-  return `${weather.condition || 'Unknown'}, temp ${temp}, humidity ${humidity}, rainfall ${rainfall}`;
+  const sunrise = weather.sunrise || 'N/A';
+  const sunset = weather.sunset || 'N/A';
+  return `${weather.condition || 'Unknown'}, temp ${temp}, humidity ${humidity}, rainfall ${rainfall}, sunrise ${sunrise}, sunset ${sunset}`;
 };

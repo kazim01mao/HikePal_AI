@@ -1017,17 +1017,26 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                 if (wp && typeof wp.lat === 'number' && typeof wp.lng === 'number') {
                     const isPhoto = wp.type === 'photo';
                     const isEmotion = wp.type === 'emotion';
-                    const bgColor = isPhoto ? '#3B82F6' : isEmotion ? '#F97316' : '#EF4444';
-                    const markerText = isEmotion ? '📝' : '';
+                    const bgColor = isPhoto ? '#3B82F6' : isEmotion ? '#EA580C' : '#F59E0B';
+                    const markerText = isEmotion && wp.imageUrl ? '📸' : isEmotion ? '📝' : isPhoto ? '📸' : '📍';
                     const icon = L.divIcon({
                         className: 'waypoint-icon',
-                        html: `<div style="background-color: ${bgColor}; width: 18px; height: 18px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; font-size:10px;">${markerText}</div>`,
-                        iconSize: [18, 18],
-                        iconAnchor: [9, 9]
+                        html: `<div style="background-color: ${bgColor}; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; font-size:10px;">${markerText}</div>`,
+                        iconSize: [20, 20],
+                        iconAnchor: [10, 10]
                     });
-                    L.marker([wp.lat, wp.lng], { icon }).addTo(map).bindPopup(
-                      wp.note || (isPhoto ? 'Photo Spot' : isEmotion ? 'Emotion Note' : 'Waypoint')
-                    );
+                    
+                    const escaped = (txt: string) => String(txt || '').replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"').replace(/'/g, '&#39;');
+                    const popupContent = `
+                      <div style="font-family: system-ui, sans-serif; padding: 4px; max-width: 220px;">
+                        <div style="font-size: 14px; font-weight: bold; color: ${bgColor}; margin-bottom: 4px;">
+                          ${escaped(wp.note || (isPhoto ? 'Photo Spot' : isEmotion ? 'Emotion Note' : 'Waypoint'))}
+                        </div>
+                        ${wp.imageUrl ? `<img src="${escaped(wp.imageUrl)}" alt="Waypoint Image" style="width: 100%; border-radius: 8px; margin-bottom: 8px; max-height: 120px; object-fit: cover;" />` : ''}
+                      </div>
+                    `;
+                    
+                    L.marker([wp.lat, wp.lng], { icon }).addTo(map).bindPopup(popupContent);
                 }
             });
         }
@@ -1546,11 +1555,11 @@ const PlanningView: React.FC<PlanningViewProps> = ({
       }
 
       // 调用 AI 分析并推荐路线
-      const result = await recommendRoutesForGroup(group.id, memberPreferences);
+      const result = await recommendRoutesForGroup(group.id, memberPreferences, hkWeather || undefined);
       setGroupRouteResult(result);
     } catch (error) {
-      console.error('Error analyzing group preferences:', error);
-      setGroupAnalysisError(error instanceof Error ? error.message : 'Failed to analyze group preferences');
+      console.error("Error analyzing group preferences:", error);
+      setGroupAnalysisError(error instanceof Error ? error.message : "Failed to analyze group preferences");
     } finally {
       setIsAnalyzingGroupPrefs(false);
       setIsLoadingTeamProgress(false);
@@ -1926,7 +1935,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
             >
               <div className="text-2xl mb-1">🤝</div>
               <div className="text-sm font-bold">Join</div>
-              <div className="text-[10px] text-opacity-70 mt-1">{startSelection === 'join' ? 'Selected' : 'Open teams'}</div>
+              <div className="text-[10px] text-opacity-70 mt-1">{startSelection === 'join' ? 'Selected' : 'Searching teams'}</div>
             </button>
           </div>
 
@@ -2011,6 +2020,15 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                 {match.matchScore}%
               </div>
             </div>
+
+            {/* 路线描述 */}
+            {match.description && (
+              <div className="mb-3">
+                <p className="text-xs font-semibold text-gray-800 leading-relaxed line-clamp-3">
+                  {match.description}
+                </p>
+              </div>
+            )}
 
             {/* 匹配原因 */}
             <div className="mb-3 flex flex-wrap gap-1">
@@ -2116,254 +2134,59 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                       try {
                         const trimmed = teamIdInput.trim();
                         if (!trimmed) {
-                          alert('Please paste a team link or ID.');
+                          alert("Please paste a team link or ID.");
                           return;
                         }
 
                         const uuidRegex =
                           /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-                        let teamId = '';
+                        let teamId = "";
+                        let redirectUrl = "";
+
                         try {
-                          if (trimmed.startsWith('http')) {
+                          if (trimmed.startsWith("http")) {
                             const url = new URL(trimmed);
-                            teamId = url.searchParams.get('team') || '';
+                            teamId = url.searchParams.get("team") || "";
+                            redirectUrl = trimmed; // Use the full URL for redirection
                           } else if (uuidRegex.test(trimmed)) {
                             teamId = trimmed;
+                            redirectUrl = `${window.location.origin}/?team=${teamId}`;
                           }
                         } catch {
                           if (uuidRegex.test(trimmed)) {
                             teamId = trimmed;
+                            redirectUrl = `${window.location.origin}/?team=${teamId}`;
                           }
                         }
 
                         if (!teamId || !uuidRegex.test(teamId)) {
-                          alert('Invalid link or team ID');
+                          alert("Invalid link or team ID");
                           return;
                         }
 
-                        const storedGroupNickname =
-                          (typeof window !== 'undefined' &&
-                            (localStorage.getItem(`hikepal_team_member_name_${teamId}`) ||
-                              localStorage.getItem('hikepal_group_nickname') ||
-                              '')) ||
-                          '';
-
-                        const { error } = await supabase.from('team_members').upsert(
-                          {
-                            team_id: teamId,
-                            user_id: currentUserId,
-                            user_name: storedGroupNickname.trim() || 'Member',
-                          },
-                          { onConflict: 'team_id,user_id' }
-                        );
-                        if (error) throw error;
-                        
-                        const { data: teamData } = await supabase
-                          .from('teams')
-                          .select('*')
-                          .eq('id', teamId)
-                          .single();
-
-                        if (!teamData) {
-                          alert('Joined, but failed to load team details.');
-                          setTeamIdInput('');
-                          return;
+                        // Direct navigation without joining/creating the group in PlanningView
+                        if (redirectUrl) {
+                          window.location.href = redirectUrl;
+                        } else {
+                           alert("Could not open the link.");
                         }
-
-                        const isCaptain = teamData.created_by === currentUserId;
-                        const groupObj: GroupHike = {
-                          id: teamData.id,
-                          title: teamData.name,
-                          description: teamData.description,
-                          date: 'To be decided',
-                          maxMembers: teamData.max_team_size,
-                          currentMembers: teamData.team_size,
-                          isOrganizer: isCaptain,
-                          members: [],
-                          status: teamData.status,
-                          routeId: teamData.target_route_id
-                        };
-
-                        setCreatedGroup(groupObj);
-                        setIsLeader(isCaptain);
-                        setShowTeamDetailsView(true);
-                        setStartSelection('group');
-                        setViewMode('start_hiking');
-                        setTeamIdInput('');
                         
-                        if (onJoinGroupHike) {
-                          onJoinGroupHike(groupObj);
-                        }
+                        setTeamIdInput(""); // Clear input
+
                       } catch (error) {
-                        console.error('Error joining team:', error);
-                        alert('Failed to join team. Please check the link and try again.');
+                        console.error("Error opening link:", error);
+                        alert("Failed to open the link. Please check the link and try again.");
                       }
                     }}
                   >
-                    Join
+                    Open
                   </button>
                 </div>
               </div>
 
               {/* Discover Teams */}
-              <div className="bg-white/80 backdrop-blur-xl p-6 rounded-3xl shadow-sm border border-white/50">
-                <h4 className="font-bold text-lg mb-4 text-gray-900 flex items-center gap-2">
-                  🌍 Discover Teams
-                </h4>
-                <div className="flex gap-3 mb-5">
-                  {/* Date Filter */}
-                  <select
-                    value={filterDate}
-                    onChange={(e) => setFilterDate(e.target.value)}
-                    className="flex-1 border-2 border-gray-200 p-2.5 rounded-xl text-sm font-medium bg-gray-50/50 focus:outline-none focus:border-blue-500 focus:bg-white transition-colors"
-                  >
-                    <option value="">📅 Any Date</option>
-                    <option value="2026-03-15">March 15, 2026</option>
-                    <option value="2026-03-20">March 20, 2026</option>
-                    <option value="2026-03-22">March 22, 2026</option>
-                  </select>
-                  {/* Difficulty Filter */}
-                  <select
-                    value={filterDifficulty}
-                    onChange={(e) => setFilterDifficulty(e.target.value as any)}
-                    className="flex-1 border-2 border-gray-200 p-2.5 rounded-xl text-sm font-medium bg-gray-50/50 focus:outline-none focus:border-blue-500 focus:bg-white transition-colors"
-                  >
-                    <option value="">🎯 Any Level</option>
-                    <option value="easy">🟢 Easy</option>
-                    <option value="medium">🟡 Medium</option>
-                    <option value="hard">🔴 Hard</option>
-                  </select>
-                </div>
-
-                {
-                  (() => {
-                    const filteredNearbyGroups = MOCK_NEARBY_GROUPS.filter(group => {
-                      if (filterDate && group.date !== filterDate) return false;
-                      if (filterDifficulty) {
-                        const route = MOCK_ROUTES.find(r => r.id === group.routeId);
-                        if (!route) return false;
-                        if (
-                          (filterDifficulty === 'easy' && route.difficulty > 2) ||
-                          (filterDifficulty === 'medium' && (route.difficulty < 2 || route.difficulty > 4)) ||
-                          (filterDifficulty === 'hard' && route.difficulty < 4)
-                        ) return false;
-                      }
-                      return true;
-                    });
-
-                    return (
-                      <div className="space-y-3 mt-5">
-                        {filteredNearbyGroups.length === 0 ? (
-                          <div className="text-center py-8 text-gray-400">
-                            <div className="text-4xl mb-2">🔍</div>
-                            <div className="text-sm font-medium">No teams match your filters</div>
-                          </div>
-                        ) : (
-                          filteredNearbyGroups.map(g => {
-                            const route = MOCK_ROUTES.find(r => r.id === g.routeId);
-                            const diffColor = 
-                              !route ? 'gray' :
-                              route.difficulty <= 2 ? 'green' :
-                              route.difficulty <= 4 ? 'amber' : 'red';
-                            
-                            return (
-                              <div key={g.id} className="bg-gradient-to-br from-white to-gray-50 rounded-2xl border-2 border-gray-100 hover:border-blue-200 p-5 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer group">
-                                <div className="flex items-start justify-between mb-3">
-                                  <div className="flex-1">
-                                    <h5 className="font-bold text-gray-900 text-sm group-hover:text-blue-600 transition-colors">{g.title}</h5>
-                                    <p className="text-xs text-gray-600 mt-1 line-clamp-1">{g.description}</p>
-                                  </div>
-                                  {route && (
-                                    <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full flex-shrink-0 ml-2 ${
-                                      diffColor === 'green' ? 'bg-green-100 text-green-700' :
-                                      diffColor === 'amber' ? 'bg-amber-100 text-amber-700' :
-                                      'bg-red-100 text-red-700'
-                                    }`}>
-                                      {route.difficulty <= 2 ? '🟢 Easy' : route.difficulty <= 4 ? '🟡 Medium' : '🔴 Hard'}
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="flex items-center justify-between text-xs text-gray-600 mb-4 flex-wrap gap-2">
-                                  <div className="flex items-center gap-1">📅 {g.date}</div>
-                                  <div className="flex items-center gap-1">👥 {g.currentMembers}/{g.maxMembers}</div>
-                                  {g.planned_duration && <div className="flex items-center gap-1">⏱️ {g.planned_duration}</div>}
-                                </div>
-                                <button 
-                                  onClick={() => setSelectedGroup(g)} 
-                                  className="w-full py-2.5 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl text-xs font-bold hover:shadow-md active:scale-95 transition-all duration-200 shadow-sm"
-                                >
-                                  View & Join
-                                </button>
-                              </div>
-                            );
-                          })
-                        )}
-                      </div>
-                    );
-                  })()}
-
-                {selectedGroup && (
-                  <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end z-50 animate-fade-in">
-                    <div className="bg-white rounded-t-3xl p-6 w-full shadow-2xl max-h-[85vh] overflow-y-auto">
-                      <div className="flex justify-between items-start mb-4">
-                        <h3 className="text-2xl font-bold text-gray-900">Join Team</h3>
-                        <button 
-                          onClick={() => setSelectedGroup(null)} 
-                          className="text-gray-400 hover:text-gray-600 text-2xl font-bold leading-none"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                      
-                      <div className="space-y-4">
-                        <div>
-                          <h4 className="font-bold text-lg text-gray-900 mb-2">{selectedGroup.title}</h4>
-                          <p className="text-gray-700 text-sm leading-relaxed">{selectedGroup.description}</p>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-3 pt-2">
-                          <div className="bg-blue-50 p-3 rounded-xl">
-                            <div className="text-xs text-blue-600 font-bold uppercase mb-1">Date</div>
-                            <div className="font-bold text-gray-900 text-sm">📅 {selectedGroup.date}</div>
-                          </div>
-                          <div className="bg-blue-50 p-3 rounded-xl">
-                            <div className="text-xs text-blue-600 font-bold uppercase mb-1">Members</div>
-                            <div className="font-bold text-gray-900 text-sm">👥 {selectedGroup.currentMembers}/{selectedGroup.maxMembers}</div>
-                          </div>
-                        </div>
-
-                        {selectedGroup.planned_duration && (
-                          <div className="bg-purple-50 p-4 rounded-xl flex items-center gap-3">
-                            <Clock size={20} className="text-purple-600 flex-shrink-0" />
-                            <div>
-                              <div className="text-xs text-purple-600 font-bold uppercase">Duration</div>
-                              <div className="font-bold text-gray-900">{selectedGroup.planned_duration}</div>
-                            </div>
-                          </div>
-                        )}
-
-                        <button 
-                          onClick={() => {
-                            handleJoinGroup(selectedGroup);
-                            setSelectedGroup(null);
-                          }} 
-                          className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-blue-500/30 active:scale-95 transition-all duration-200"
-                        >
-                          Join this Team
-                        </button>
-                        
-                        <button 
-                          onClick={() => setSelectedGroup(null)} 
-                          className="w-full py-3 border-2 border-gray-200 rounded-xl font-bold text-gray-700 hover:bg-gray-50 transition-colors"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
+              {/* Discover Teams content removed as per user request */}
             </div>
           )}
 
@@ -2535,24 +2358,24 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                   error?.hint ||
                                   'Unknown error';
                                 const errorCode = error?.code ? ` [${error.code}]` : '';
-                                const errorDetail = error?.details ? `\nDetails: ${error.details}` : '';
-                                const errorHint = error?.hint ? `\nHint: ${error.hint}` : '';
-                                console.error('Full error:', { message: errorMsg, code: error?.code, details: error?.details, hint: error?.hint });
-                                alert(`Failed to save preferences${errorCode}:\n${errorMsg}${errorDetail}${errorHint}\n\nPlease try again.`);
-                              }
-                            }}
-                            className="flex-1 bg-hike-green text-white py-3.5 rounded-2xl font-bold shadow-lg active:scale-95 transition-all hover:bg-green-600"
-                          >
-                            ✅ Save My Preferences
-                          </button>
-                          <button
-                            onClick={() => setShowOrganizerPreferenceForm(false)}
-                            className="flex-1 bg-gray-100 text-gray-700 py-3.5 rounded-2xl font-bold hover:bg-gray-200 transition"
-                          >
-                            Skip for Now
-                          </button>
-                        </div>
-                      </div>
+          const errorDetail = error?.details ? `\nDetails: ${error.details}` : '';
+          const errorHint = error?.hint ? `\nHint: ${error.hint}` : '';
+          console.error('Full error:', { message: errorMsg, code: error?.code, details: error?.details, hint: error?.hint });
+          alert(`Failed to save preferences${errorCode}:\n${errorMsg}${errorDetail}${errorHint}\n\nPlease try again.`);
+        }
+      }}
+      className="flex-1 bg-hike-green text-white py-3.5 rounded-2xl font-bold shadow-lg active:scale-95 transition-all hover:bg-green-600"
+    >
+      ✅ Save My Preferences
+    </button>
+    <button
+      onClick={() => setShowOrganizerPreferenceForm(false)}
+      className="flex-1 bg-gray-100 text-gray-700 py-3.5 rounded-2xl font-bold hover:bg-gray-200 transition"
+    >
+      Skip for Now
+    </button>
+  </div>
+</div>
                     </div>
                   )}
 
@@ -2767,6 +2590,15 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                       {route.matchScore}% Match
                                     </span>
                                   </div>
+
+                                  {/* 路线描述 */}
+                                  {route.description && (
+                                    <div className="mb-3">
+                                      <p className="text-xs font-semibold text-gray-800 leading-relaxed line-clamp-3">
+                                        {route.description}
+                                      </p>
+                                    </div>
+                                  )}
 
                                     {/* Matches tags formatting like Solo trip */}
                                     <div className="my-2 flex flex-wrap gap-1">
@@ -3345,9 +3177,21 @@ const PlanningView: React.FC<PlanningViewProps> = ({
             <MapPin size={20} className="text-hike-green" />
             <span>{selectedCity}</span>
           </div>
-          <div className="text-sm text-gray-500">
-            {hkWeather ? `${hkWeather.condition}, ${hkWeather.temp}°C` : 'Loading weather...'}
-          </div>
+        <div className="text-sm text-gray-500 flex items-center gap-2">
+          {hkWeather ? (
+            <>
+              <span>{hkWeather.condition}</span>
+              <span>•</span>
+              <span>{hkWeather.temp}°C</span>
+              <span>•</span>
+              <span>sunrise {hkWeather.sunrise || '06:30'}</span>
+              <span>•</span>
+              <span>sunset {hkWeather.sunset || '18:30'}</span>
+            </>
+          ) : (
+            'Loading weather...'
+          )}
+        </div>
         </div>
         
         {/* Functional Buttons (Active Now) */}
@@ -3356,12 +3200,12 @@ const PlanningView: React.FC<PlanningViewProps> = ({
              onClick={() => { setViewMode('start_hiking'); }}
                 className="bg-orange-50 p-3 rounded-xl border border-orange-100 flex items-center gap-3 transition-transform active:scale-95 shadow-sm"
             >
-              <div className="bg-orange-100 p-2 rounded-full text-orange-600">
-                <MapPin size={20} />
+              <div className="bg-orange-100 p-2 rounded-full text-orange-600 flex items-center justify-center">
+                <Sparkles size={20} />
               </div>
               <div className="text-left">
-                <div className="font-bold text-sm text-gray-800">Start Hiking</div>
-                <div className="text-xs text-gray-500">Find Routes</div>
+                <div className="font-bold text-sm text-gray-800">AI Route Matching</div>
+                <div className="text-xs text-gray-500">Start Hiking</div>
               </div>
            </button>
            <button 
@@ -3384,14 +3228,11 @@ const PlanningView: React.FC<PlanningViewProps> = ({
         <div className="mb-4">
           <input
             type="text"
-            placeholder="Search by trail name (e.g. Hong Kong Trail Sec 1)..."
+            placeholder="searching by keywords (e.g. Hong Kong trail)"
             value={routeSearchQuery}
             onChange={e => handleRouteSearch(e.target.value)}
             className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:border-hike-green text-sm"
           />
-          <p className="text-[10px] text-gray-400 mt-1.5 px-1 font-medium italic">
-            💡 Hint: Enter trail name to filter results below
-          </p>
         </div>
         <div className="flex justify-between items-center mb-2">
             <h3 className="font-bold text-gray-700">

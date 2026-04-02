@@ -16,6 +16,7 @@ export interface GroupRouteResult {
   synthesisAnalysis: string;
   recommendedRoutes: RouteMatchScore[];
   synthesizedPreferences: UserHikingPreferences;
+  weatherContext?: { temp?: number; humidity?: number; condition?: string; rainfallMm?: number; sunrise?: string; sunset?: string };
 }
 
 /**
@@ -93,14 +94,15 @@ Return ONLY valid JSON (no markdown code blocks):
  */
 export const recommendRoutesForGroup = async (
   teamId: string,
-  members: MemberPreference[]
+  members: MemberPreference[],
+  weatherContext?: { temp?: number; humidity?: number; condition?: string; rainfallMm?: number; sunrise?: string; sunset?: string }
 ): Promise<GroupRouteResult> => {
   try {
     // 1. 第一步：综合所有成员的偏好
     const { synthesis, preferences } = await synthesizeGroupPreferences(teamId, members);
     
     // 2. 第二步：使用综合偏好搜索最佳路线
-    const recommendedRoutes = await findMatchingRoutes(preferences, 5);
+    const recommendedRoutes = await findMatchingRoutes(preferences, 5, weatherContext);
 
     // 3. 返回完整结果给队长界面
     return {
@@ -109,9 +111,10 @@ export const recommendRoutesForGroup = async (
       synthesisAnalysis: synthesis,
       recommendedRoutes: recommendedRoutes.slice(0, 3), // Top 3 routes for group
       synthesizedPreferences: preferences,
+      weatherContext: weatherContext,
     };
   } catch (error) {
-    console.error('Error recommending routes for group:', error);
+    console.error("Error recommending routes for group:", error);
     throw error;
   }
 };

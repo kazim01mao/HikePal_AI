@@ -79,6 +79,7 @@ export interface RouteMatchScore {
   totalDuration: number;
   difficulty: number;
   tags?: string[];
+  description?: string; // 路线特点描述
 }
 
 const MAX_SEGMENT_JOIN_GAP_METERS = 250;
@@ -618,7 +619,8 @@ export async function findMatchingRoutes(
                         totalDistance: computedDistance || genRoute.total_distance || 0,
                         totalDuration: computedDuration || genRoute.total_duration || 0,
                         difficulty: computedDifficulty || genRoute.difficulty || 3,
-                        tags: genRoute.tags || []
+                        tags: genRoute.tags || [],
+                        description: genRoute.description || 'A recommended hiking route based on your preferences'
                     };
                 }).filter((r: RouteMatchScore | null) => r !== null);
             }
@@ -969,7 +971,7 @@ export async function fetchEvents(): Promise<HikingEvent[]> {
       date: formattedDate,
       location: event.location_name || event.location,
       participants: event.current_participants || 0,
-      imageUrl: event.image_url || `https://picsum.photos/400/200?random=${Math.random()}`,
+      imageUrl: event.cover_url || event.image_url || `https://picsum.photos/400/200?random=${Math.random()}`,
       trail_id: event.trail_id,
       description: event.description,
       routeData: routeData
@@ -1050,6 +1052,16 @@ export async function fetchUploadedRoutes(): Promise<any[]> {
     return data.map((record: any) => {
       const routeData = record.route_data || {};
       const normalizedCoords = sanitizeTrackCoords(routeData.coordinates);
+      
+      // Extract image URL from route_data or use placeholder
+      const imageUrl = routeData.imageUrl || 
+                      routeData.cover_url || 
+                      routeData.cover_image || 
+                      (routeData.waypoints && routeData.waypoints.length > 0 
+                        ? routeData.waypoints.find((wp: any) => wp.imageUrl)?.imageUrl 
+                        : null) ||
+                      'https://images.unsplash.com/photo-1551632811-561732d1e306?q=80&w=2070&auto=format&fit=crop';
+      
       return {
         id: record.id,
         name: record.name,
@@ -1063,7 +1075,7 @@ export async function fetchUploadedRoutes(): Promise<any[]> {
         is_segment_based: false,
         created_by: record.user_id,
         created_at: record.created_at,
-        imageUrl: 'https://images.unsplash.com/photo-1551632811-561732d1e306?q=80&w=2070&auto=format&fit=crop', // Placeholder for now
+        imageUrl: imageUrl,
         full_coordinates: normalizedCoords, // Normalize to [[lat,lng], ...] for stable rendering
         waypoints: routeData.waypoints || [], // 🆕 Grab waypoints
         // Keep original data for reference

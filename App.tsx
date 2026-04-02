@@ -145,8 +145,96 @@ const App: React.FC = () => {
     
     if (user) {
       try {
+        const isUuid = (value: string | null | undefined): boolean =>
+          !!value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+
+        const resolveOfficialRouteBinding = async (
+          sourceRouteId: string | null | undefined,
+          sourceRouteName: string | null | undefined
+        ) => {
+          let officialRoute: any = null;
+          let routeMatchMethod = 'unmatched';
+
+          if (isUuid(sourceRouteId || '')) {
+            const byId = await supabase
+              .from('official_trails_backend')
+              .select('id, name, cover_url, difficulty')
+              .eq('id', sourceRouteId)
+              .maybeSingle();
+            if (!byId.error && byId.data) {
+              officialRoute = byId.data;
+              routeMatchMethod = 'official_id';
+            }
+          }
+
+          if (!officialRoute && sourceRouteName) {
+            const exactByName = await supabase
+              .from('official_trails_backend')
+              .select('id, name, cover_url, difficulty')
+              .eq('name', sourceRouteName)
+              .limit(1)
+              .maybeSingle();
+            if (!exactByName.error && exactByName.data) {
+              officialRoute = exactByName.data;
+              routeMatchMethod = 'official_name_exact';
+            }
+          }
+
+          if (!officialRoute && sourceRouteName) {
+            const fuzzyByName = await supabase
+              .from('official_trails_backend')
+              .select('id, name, cover_url, difficulty')
+              .ilike('name', `%${sourceRouteName}%`)
+              .limit(1)
+              .maybeSingle();
+            if (!fuzzyByName.error && fuzzyByName.data) {
+              officialRoute = fuzzyByName.data;
+              routeMatchMethod = 'official_name_fuzzy';
+            }
+          }
+
+          let officialSegmentIds: string[] = [];
+          if (officialRoute?.id) {
+            const conn = await supabase
+              .from('official_connection_backend')
+              .select('segment_id, sort_order')
+              .eq('route_id', officialRoute.id)
+              .order('sort_order', { ascending: true });
+            if (!conn.error && Array.isArray(conn.data)) {
+              officialSegmentIds = conn.data
+                .map((row: any) => row.segment_id)
+                .filter(Boolean)
+                .map((seg: any) => String(seg));
+            }
+          }
+
+          return {
+            officialRouteId: officialRoute?.id || null,
+            officialRouteName: officialRoute?.name || null,
+            officialCoverUrl: officialRoute?.cover_url || null,
+            officialDifficulty: officialRoute?.difficulty || null,
+            officialSegmentIds,
+            routeMatchMethod
+          };
+        };
+
+        const normalizeWaypoint = (wp: any) => {
+          if (!wp) return null;
+          const lat = Number(wp.lat);
+          const lng = Number(wp.lng);
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+          return {
+            ...wp,
+            lat,
+            lng,
+            emoji: typeof wp.emoji === 'string' ? wp.emoji : undefined,
+            note: typeof wp.note === 'string' ? wp.note : undefined,
+            imageUrl: typeof wp.imageUrl === 'string' ? wp.imageUrl : undefined
+          };
+        };
+
         // 2. Save to Supabase
-        const { error } = await supabase
+        const { data: insertedTrack, error } = await supabase
           .from('user_tracks')
           .insert({
             user_id: user.id,
@@ -157,13 +245,144 @@ const App: React.FC = () => {
             coordinates: track.coordinates, // JSONB
             waypoints: track.waypoints,
             difficulty: track.difficulty
-          });
+          })
+          .select('id')
+          .single();
 
         if (error) {
           console.error('Error saving track to Supabase:', error);
           // Optional: revert state if failed
         } else {
           console.log('Track saved to Supabase:', track);
+          const savedTrackId = insertedTrack?.id ? String(insertedTrack.id) : '';
+
+          if (savedTrackId) {
+            const rawWaypoints = Array.isArray(track.waypoints) ? track.waypoints : [];
+            const normalizedWaypoints = rawWaypoints
+              .map(normalizeWaypoint)
+              .filter(Boolean) as any[];
+
+            // Keep original image URLs from emotion-images; no bucket copy.
+            const persistedWaypoints = normalizedWaypoints;
+
+            const routeShape = Array.isArray(track.routeShape) && track.routeShape.length > 0
+              ? track.routeShape
+              : track.coordinates || [];
+            const relatedReminders = Array.isArray(track.relatedReminders) ? track.relatedReminders : [];
+            const officialRouteBinding = await resolveOfficialRouteBinding(
+              track.routeId || null,
+              track.routeName || track.name || null
+            );
+
+            try {
+              const { data: contextData, error: contextError } = await supabase
+                .from('profile_track_route_contexts')
+                .upsert(
+                  {
+                    track_id: savedTrackId,
+                    user_id: user.id,
+                    route_id: track.routeId || null,
+                    route_name: track.routeName || track.name || null,
+                    official_route_id: officialRouteBinding.officialRouteId,
+                    official_route_name: officialRouteBinding.officialRouteName,
+                    official_cover_url: officialRouteBinding.officialCoverUrl,
+                    official_difficulty: officialRouteBinding.officialDifficulty,
+                    official_segment_ids: officialRouteBinding.officialSegmentIds,
+                    route_match_method: officialRouteBinding.routeMatchMethod,
+                    route_shape: routeShape,
+                    related_reminders: relatedReminders
+                  },
+                  { onConflict: 'track_id' }
+                )
+                .select('id')
+                .single();
+
+              if (contextError) {
+                console.warn('Failed to save route context (profile_track_route_contexts):', contextError);
+              } else if (contextData?.id) {
+                const markerRows = persistedWaypoints
+                  .filter((wp: any) => wp && wp.type !== 'reminder')
+                  .map((wp: any) => ({
+                    context_id: contextData.id,
+                    track_id: savedTrackId,
+                    user_id: user.id,
+                    emoji: wp.emoji || null,
+                    note: wp.note || null,
+                    image_url: wp.imageUrl || null,
+                    latitude: Number(wp.lat),
+                    longitude: Number(wp.lng)
+                  }))
+                  .filter((row: any) => Number.isFinite(row.latitude) && Number.isFinite(row.longitude));
+
+                await supabase
+                  .from('profile_track_markers')
+                  .delete()
+                  .eq('track_id', savedTrackId)
+                  .eq('user_id', user.id);
+
+                if (markerRows.length > 0) {
+                  const { error: markerError } = await supabase
+                    .from('profile_track_markers')
+                    .insert(markerRows);
+                  if (markerError) {
+                    console.warn('Failed to save profile_track_markers:', markerError);
+                  }
+                }
+              }
+            } catch (bindError) {
+              console.warn('Profile binding tables not available yet, skipped route/emoji/image binding save:', bindError);
+            }
+
+            // Persist AI-generated route usage snapshot into ai_route_matches schema.
+            if (track.aiGenerated) {
+              try {
+                let topRouteId: string | null = null;
+                if (isUuid(track.routeId || '')) {
+                  const { data: routeExists, error: routeCheckError } = await supabase
+                    .from('routes')
+                    .select('id')
+                    .eq('id', track.routeId)
+                    .maybeSingle();
+                  if (!routeCheckError && routeExists?.id) {
+                    topRouteId = String(routeExists.id);
+                  }
+                }
+
+                const aiMatchedRoutesPayload = Array.isArray(track.aiMatchedRoutes) && track.aiMatchedRoutes.length > 0
+                  ? track.aiMatchedRoutes
+                  : [
+                      {
+                        route_id: track.routeId || null,
+                        route_name: track.routeName || track.name || null,
+                        reason: 'Saved from AI generated route',
+                        route_data: {
+                          coordinates: routeShape,
+                          related_reminders: relatedReminders
+                        }
+                      }
+                    ];
+
+                const { error: aiMatchInsertError } = await supabase
+                  .from('ai_route_matches')
+                  .insert({
+                    user_id: user.id,
+                    session_id: sessionId,
+                    user_mood: track.aiUserMood || null,
+                    user_difficulty: track.aiUserDifficulty || null,
+                    user_condition: track.aiUserCondition || null,
+                    matched_routes: aiMatchedRoutesPayload,
+                    top_route_id: topRouteId,
+                    used_at: new Date().toISOString()
+                  });
+
+                if (aiMatchInsertError) {
+                  console.warn('Failed to save ai_route_matches for save-to-profile:', aiMatchInsertError);
+                }
+              } catch (aiSaveErr) {
+                console.warn('ai_route_matches save skipped due to error:', aiSaveErr);
+              }
+            }
+          }
           
           // 3. Update user_stats
           // Parse distance (e.g. "5.2 km" -> 5.2)

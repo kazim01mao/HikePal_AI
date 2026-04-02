@@ -238,12 +238,31 @@ const HomeView: React.FC<HomeViewProps> = ({ user, onLogout, myTracks, myGroupHi
     return cleaned;
   };
 
+  const getDisplayWaypoints = (track: Track | null): any[] => {
+    if (!track || !Array.isArray(track.waypoints)) return [];
+    return track.waypoints.filter((wp: any) => wp && wp.type !== 'reminder');
+  };
+
+  const resolveWaypointEmoji = (wp: any): string => {
+    if (wp?.imageUrl) return '📸';
+    if (typeof wp?.emoji === 'string' && wp.emoji.trim().length > 0) return wp.emoji.trim();
+    const noteText = String(wp?.note || '').trim();
+    if (!noteText) return '🙂';
+    const emojiMatch = noteText.match(/(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*)/u);
+    if (emojiMatch?.[1]) return emojiMatch[1];
+    const firstChar = Array.from(noteText)[0];
+    return firstChar && firstChar.length > 0 ? firstChar : '🙂';
+  };
+
   const resolveSnapshotCoords = (snapshot: any): [number, number][] => {
     if (!snapshot) return [];
     const direct = sanitizeRouteCoords(snapshot.coordinates);
     if (direct.length > 0) return direct;
     if (Array.isArray(snapshot.segments) && snapshot.segments.length > 0) {
       return sanitizeRouteCoords(mergeSegmentCoordinates(snapshot.segments));
+    }
+    if (Array.isArray(snapshot.full_coordinates) && snapshot.full_coordinates.length > 0) {
+      return sanitizeRouteCoords(snapshot.full_coordinates);
     }
     return [];
   };
@@ -560,7 +579,9 @@ const HomeView: React.FC<HomeViewProps> = ({ user, onLogout, myTracks, myGroupHi
       return cleaned;
     };
 
-    const safeCoords = sanitizeCoords(selectedTrack.coordinates);
+    // Ensure we can handle tracks directly uploaded by the community which might have full_coordinates or coordinates
+    const coordsSource = selectedTrack.coordinates || (selectedTrack as any).full_coordinates || [];
+    const safeCoords = sanitizeCoords(coordsSource);
 
     if (safeCoords.length > 0) {
       const polyline = L.polyline(safeCoords, {
@@ -569,6 +590,47 @@ const HomeView: React.FC<HomeViewProps> = ({ user, onLogout, myTracks, myGroupHi
         opacity: 0.8
       }).addTo(map);
       map.fitBounds(polyline.getBounds(), { padding: [20, 20] });
+
+      // Add user waypoint markers to map (hide reminder_info markers)
+      const displayWaypoints = getDisplayWaypoints(selectedTrack);
+      if (displayWaypoints.length > 0) {
+        displayWaypoints.forEach((wp: any) => {
+          if (wp && typeof wp.lat === 'number' && typeof wp.lng === 'number') {
+            const isEmotion = wp.type === 'emotion';
+            const isPhoto = wp.type === 'photo';
+            
+            let emoji = '📍';
+            let color = '#F59E0B'; // default marker color
+            
+            if (isEmotion) {
+              emoji = resolveWaypointEmoji(wp);
+              color = '#EA580C'; // orange
+            } else if (isPhoto) {
+              emoji = '📸';
+              color = '#3B82F6'; // blue
+            }
+
+            const icon = L.divIcon({ 
+              html: `<div style="background-color: ${color}; color: white; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; font-size: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${emoji}</div>`,
+              className: '',
+              iconSize: [20, 20],
+              iconAnchor: [10, 10]
+            });
+            
+            const escaped = (txt: string) => String(txt || '').replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"').replace(/'/g, '&#39;');
+            const popupContent = `
+              <div style="font-family: system-ui, sans-serif; padding: 4px; max-width: 220px;">
+                <div style="font-size: 14px; font-weight: bold; color: ${color}; margin-bottom: 4px;">
+                  ${escaped(wp.note || 'Waypoint')}
+                </div>
+                ${wp.imageUrl ? `<img src="${escaped(wp.imageUrl)}" alt="Waypoint Image" style="width: 100%; border-radius: 8px; margin-bottom: 8px; max-height: 120px; object-fit: cover;" />` : ''}
+              </div>
+            `;
+            
+            L.marker([wp.lat, wp.lng], { icon }).addTo(map).bindPopup(popupContent);
+          }
+        });
+      }
 
       // Delay to ensure container is fully visible
       setTimeout(() => {
@@ -1172,23 +1234,28 @@ const HomeView: React.FC<HomeViewProps> = ({ user, onLogout, myTracks, myGroupHi
                   </div>
                 </div>
 
-                {selectedTrack.waypoints && selectedTrack.waypoints.length > 0 && (
+                {getDisplayWaypoints(selectedTrack).length > 0 && (
                   <div>
                     <h4 className="text-xs text-gray-400 font-black uppercase tracking-widest mb-3">Waypoints Captured</h4>
-                    <div className="max-h-80 overflow-y-auto">
-                      {selectedTrack.waypoints.map((wp: any, idx: number) => (
-                        <div key={idx} className="flex items-center gap-3 bg-white p-3 rounded-xl border border-gray-100 shadow-sm">
-                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                            wp.type === 'photo' ? 'bg-blue-50 text-blue-500' : wp.type === 'emotion' ? 'bg-orange-50 text-orange-600' : 'bg-red-50 text-red-500'
-                          }`}>
-                            {wp.type === 'photo' ? '📷' : wp.type === 'emotion' ? '📝' : '📍'}
+                      <div className="max-h-80 overflow-y-auto">
+                        {getDisplayWaypoints(selectedTrack).map((wp: any, idx: number) => (
+                          <div key={idx} className="flex flex-col gap-2 bg-white p-3 rounded-xl border border-gray-100 shadow-sm mb-2">
+                            <div className="flex items-center gap-3">
+                              <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                                wp.type === 'photo' ? 'bg-blue-50 text-blue-500' : wp.type === 'emotion' ? 'bg-orange-50 text-orange-600' : 'bg-red-50 text-red-500'
+                              }`}>
+                                {wp.type === 'photo' ? '📷' : wp.type === 'emotion' ? '📝' : '📍'}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm font-bold text-gray-800 truncate">{wp.note || (wp.type === 'photo' ? 'Photo Spot' : wp.type === 'emotion' ? 'Emotion Note' : 'Waypoint')}</div>
+                              </div>
+                            </div>
+                            {wp.imageUrl && (
+                              <img src={wp.imageUrl} alt="Waypoint" className="w-full h-32 object-cover rounded-lg border border-gray-200 mt-2" />
+                            )}
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-bold text-gray-800 truncate">{wp.note || (wp.type === 'photo' ? 'Photo Spot' : wp.type === 'emotion' ? 'Emotion Note' : 'Waypoint')}</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
                   </div>
                 )}
 

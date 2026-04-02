@@ -84,6 +84,16 @@ function sanitizeRouteCoords(raw: any): [number, number][] {
   return cleaned;
 }
 
+function getWaypointGlyph(note: any, imageUrl?: string): string {
+  if (imageUrl) return '📸';
+  const text = String(note || '').trim();
+  if (!text) return '🙂';
+  const emojiMatch = text.match(/(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*)/u);
+  if (emojiMatch?.[1]) return emojiMatch[1];
+  const first = Array.from(text)[0];
+  return first && first.length > 0 ? first : '🙂';
+}
+
 function parseGeographyPoint(geoObj: any): [number, number] | null {
   if (!geoObj) return null;
   if (geoObj.type === 'Point' && Array.isArray(geoObj.coordinates)) return [geoObj.coordinates[1], geoObj.coordinates[0]];
@@ -163,6 +173,7 @@ interface EmotionNote {
   content: string;
   latitude: number;
   longitude: number;
+  imageUrl?: string;
   created_at?: string | null;
 }
 
@@ -228,11 +239,15 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const alertedItemsRef = useRef<Set<string>>(new Set());
   const [showAddNote, setShowAddNote] = useState(false);
   const [noteContent, setNoteContent] = useState('');
+  const [noteImage, setNoteImage] = useState<File | null>(null);
+  const [noteImagePreview, setNoteImagePreview] = useState<string | null>(null);
   const [isNoteSubmitting, setIsNoteSubmitting] = useState(false);
   const [emotionNotes, setEmotionNotes] = useState<EmotionNote[]>([]);
   const [includeEmotionNotesOnSave, setIncludeEmotionNotesOnSave] = useState(true);
   const [includeEmotionNotesOnUpload, setIncludeEmotionNotesOnUpload] = useState(true);
   const [showRouteInfo, setShowRouteInfo] = useState(false);
+  const [showQuitConfirm, setShowQuitConfirm] = useState(false);
+  const [showRemindersInReview, setShowRemindersInReview] = useState(true);
   const [hasStartedHike, setHasStartedHike] = useState(false);
   const [alertsEnabled, setAlertsEnabled] = useState(true);
   const [actualTeamSize, setActualTeamSize] = useState<number>(1);
@@ -240,7 +255,9 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [aiHighlights, setAiHighlights] = useState<string>('');
   const [isLoadingHighlights, setIsLoadingHighlights] = useState(false);
   const [toast, setToast] = useState<{message: string, type: 'success' | 'info'} | null>(null);
+  const [isGeneratingPreHikeAdvice, setIsGeneratingPreHikeAdvice] = useState(false);
   const activeRouteId = activeRoute?.id || null;
+  const preHikeAdviceKeyRef = useRef<string | null>(null);
 
   const appendRecordedPoint = (nextPoint: [number, number]) => {
     setRecordedPath(prev => {
@@ -408,32 +425,40 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     setRiskStats({ temp: weather.temp, humidity: weather.humidity, condition: weather.condition });
   };
 
-  const buildCollectedWaypoints = (includeEmotionNotes: boolean): Waypoint[] => {
-    const reminderWaypoints = Array.from(alertedItemsRef.current).map(id => {
-      const item = reminderInfo.find(r => r.id === id);
-      const coords = getCoords(item);
-      return {
-        id: item?.id || String(id),
-        lat: coords ? coords[0] : 0,
-        lng: coords ? coords[1] : 0,
-        note: item?.name || 'Reminder',
-        type: 'reminder',
-        timestamp: new Date()
-      } as unknown as Waypoint;
-    });
+  const buildCollectedWaypoints = (
+    includeEmotionNotes: boolean,
+    options?: { includeReminders?: boolean }
+  ): Waypoint[] => {
+    const includeReminders = options?.includeReminders !== false;
+    const reminderWaypoints = includeReminders
+      ? Array.from(alertedItemsRef.current).map(id => {
+          const item = reminderInfo.find(r => r.id === id);
+          const coords = getCoords(item);
+          return {
+            id: item?.id || String(id),
+            lat: coords ? coords[0] : 0,
+            lng: coords ? coords[1] : 0,
+            note: item?.name || 'Reminder',
+            type: 'reminder',
+            timestamp: new Date()
+          } as unknown as Waypoint;
+        })
+      : [];
 
     if (!includeEmotionNotes) return reminderWaypoints;
 
-    const emotionWaypoints = emotionNotes
-      .filter(note => typeof note.latitude === 'number' && typeof note.longitude === 'number')
-      .map(note => ({
-        id: `emotion-${note.id}`,
-        lat: note.latitude,
-        lng: note.longitude,
-        note: note.content,
-        type: 'emotion',
-        timestamp: note.created_at ? new Date(note.created_at) : new Date()
-      } as unknown as Waypoint));
+      const emotionWaypoints = emotionNotes
+        .filter(note => typeof note.latitude === 'number' && typeof note.longitude === 'number')
+        .map(note => ({
+          id: `emotion-${note.id}`,
+          lat: note.latitude,
+          lng: note.longitude,
+          emoji: getWaypointGlyph(note.content, note.imageUrl),
+          note: note.content,
+          type: 'emotion',
+          imageUrl: note.imageUrl,
+          timestamp: note.created_at ? new Date(note.created_at) : new Date()
+        } as unknown as Waypoint));
 
     return [...reminderWaypoints, ...emotionWaypoints];
   };
@@ -445,8 +470,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     }
 
     try {
-      const scopeCol = 'id, team_id, route_id, user_id, user_name, content, latitude, longitude, created_at';
-      const fallbackCol = 'id, team_id, user_id, user_name, content, latitude, longitude, created_at';
+      const scopeCol = 'id, team_id, route_id, user_id, user_name, content, latitude, longitude, image_url, created_at';
+      const fallbackCol = 'id, team_id, user_id, user_name, content, latitude, longitude, image_url, created_at';
 
       let query = supabase
         .from('team_member_emotions')
@@ -455,6 +480,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       query = teamId ? query.eq('team_id', teamId) : query.eq('user_id', userId);
 
       let { data, error } = await query;
+      
+      // Fallback 1: Missing route_id
       if (error && isMissingRouteScopeColumnError(error)) {
         let fallbackQuery = supabase
           .from('team_member_emotions')
@@ -465,8 +492,30 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         data = fallback.data as any;
         error = fallback.error;
       }
+      
+      // Fallback 2: Missing image_url
+      if (error && (error.code === '42703' || String(error.message).includes('image_url'))) {
+        const oldCol = 'id, team_id, route_id, user_id, user_name, content, latitude, longitude, created_at';
+        let queryOld = supabase.from('team_member_emotions').select(oldCol).order('created_at', { ascending: true });
+        queryOld = teamId ? queryOld.eq('team_id', teamId) : queryOld.eq('user_id', userId);
+        const fallbackOld = await queryOld;
+        
+        // Fallback 3: Missing BOTH route_id AND image_url
+        if (fallbackOld.error && isMissingRouteScopeColumnError(fallbackOld.error)) {
+           const oldestCol = 'id, team_id, user_id, user_name, content, latitude, longitude, created_at';
+           let queryOldest = supabase.from('team_member_emotions').select(oldestCol).order('created_at', { ascending: true });
+           queryOldest = teamId ? queryOldest.eq('team_id', teamId) : queryOldest.eq('user_id', userId);
+           const fallbackOldest = await queryOldest;
+           data = fallbackOldest.data as any;
+           error = fallbackOldest.error;
+        } else {
+           data = fallbackOld.data as any;
+           error = fallbackOld.error;
+        }
+      }
+      
       if (error) throw error;
-      const notes = Array.isArray(data) ? (data as EmotionNote[]) : [];
+      const notes = Array.isArray(data) ? data.map(n => ({...n, imageUrl: n.image_url})) as EmotionNote[] : [];
       setEmotionNotes(filterNotesForRoute(notes, activeRouteId));
     } catch (err) {
       console.warn('Failed to load emotion notes:', err);
@@ -864,8 +913,22 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
           recordedPolylineRef.current.setLatLngs(safeCoords);
           ((activeRoute as any).historyWaypoints || []).forEach((wp: any) => {
              if (wp && typeof wp.lat === 'number' && typeof wp.lng === 'number') {
-                const icon = L.divIcon({ html: `<div style="background-color: #F59E0B; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white;"></div>` });
-                L.marker([wp.lat, wp.lng], { icon }).addTo(map);
+                if (wp.type === 'reminder') return;
+                const markerEmoji = getWaypointGlyph(wp.note, wp.imageUrl);
+                const icon = L.divIcon({
+                  html: `<div style="background-color: #F59E0B; color: white; width: 22px; height: 22px; border-radius: 50%; border: 2px solid white; display:flex; align-items:center; justify-content:center; font-size: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.35);">${markerEmoji}</div>`,
+                  className: '',
+                  iconSize: [22, 22],
+                  iconAnchor: [11, 11],
+                  popupAnchor: [0, -11]
+                });
+                const popupContent = `
+                  <div style="font-family: system-ui, sans-serif; padding: 4px; max-width: 220px;">
+                    ${wp.imageUrl ? `<img src="${String(wp.imageUrl)}" alt="Waypoint" style="width: 100%; border-radius: 8px; margin-bottom: 8px; max-height: 120px; object-fit: cover;" />` : ''}
+                    <div style="font-size: 13px; color: #111827; line-height: 1.4;">${String(wp.note || 'Emotion Note')}</div>
+                  </div>
+                `;
+                L.marker([wp.lat, wp.lng], { icon }).addTo(map).bindPopup(popupContent);
              }
           });
         }
@@ -956,14 +1019,17 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     reminderMarkersRef.current.forEach(m => m.remove());
     reminderMarkersRef.current = [];
 
+    if (isReviewMode && !showRemindersInReview) return;
     if (reminderInfo.length === 0) return;
 
     let markersToShow = reminderInfo;
-    if (isRecording && activeRoute && activeRoute.coordinates) {
+    if (activeRoute && activeRoute.coordinates && activeRoute.coordinates.length > 0) {
       markersToShow = reminderInfo.filter(r => {
         const coords = getCoords(r);
-        return coords && isPointNearRoute(coords[0], coords[1], activeRoute.coordinates || [], 300);
+        return coords && isPointNearRoute(coords[0], coords[1], activeRoute.coordinates || [], 200);
       });
+    } else if (!isRecording) {
+      markersToShow = [];
     }
 
     markersToShow.forEach(r => {
@@ -1044,7 +1110,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         reminderMarkersRef.current.push(marker);
       }
     });
-  }, [reminderInfo, mapInstanceRef.current, isRecording, activeRoute]);
+  }, [reminderInfo, mapInstanceRef.current, isRecording, activeRoute, isReviewMode, showRemindersInReview]);
 
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -1085,8 +1151,9 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       const isSelf = note.user_id === userId;
       const displayName = (note.user_name || '').trim() || (isSelf ? 'Me' : 'Teammate');
       const markerColor = isSelf ? '#F97316' : '#14B8A6';
+      const noteEmoji = getWaypointGlyph(note.content, note.imageUrl);
       const icon = L.divIcon({
-        html: `<div style="background-color: ${markerColor}; color: white; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display:flex; align-items:center; justify-content:center; font-size:12px; box-shadow: 0 2px 4px rgba(0,0,0,0.35);">📝</div>`,
+        html: `<div style="background-color: ${markerColor}; color: white; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display:flex; align-items:center; justify-content:center; font-size:12px; box-shadow: 0 2px 4px rgba(0,0,0,0.35);">${noteEmoji}</div>`,
         className: '',
         iconSize: [24, 24],
         iconAnchor: [12, 12],
@@ -1098,6 +1165,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
           <div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">
             <strong style="color: ${markerColor};">${escaped(displayName)}</strong> · ${escaped(createdAt)}
           </div>
+          ${note.imageUrl ? `<img src="${escaped(note.imageUrl)}" alt="Emotion" style="width: 100%; border-radius: 8px; margin-bottom: 8px; max-height: 120px; object-fit: cover;" />` : ''}
           <div style="font-size: 13px; color: #111827; line-height: 1.4;">
             ${escaped(note.content)}
           </div>
@@ -1349,11 +1417,152 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     }
   }, [activeRoute, hasStartedHike]);
 
+  useEffect(() => {
+    const generatePreHikeAdvice = async () => {
+      if (!activeRoute || hasStartedHike || isReviewMode) return;
+
+      const routeKey = `${activeRoute.id || activeRoute.name || 'route'}::${new Date().toDateString()}`;
+      if (preHikeAdviceKeyRef.current === routeKey) return;
+      preHikeAdviceKeyRef.current = routeKey;
+
+      const nearbyRouteReminders = reminderInfo
+        .filter(r => {
+          const coords = getCoords(r);
+          return coords && activeRoute.coordinates && isPointNearRoute(coords[0], coords[1], activeRoute.coordinates || [], 200);
+        })
+        .map(r => ({
+          name: r.name,
+          info: r.ai_prompt,
+          category: r.category,
+          risk_level: r.risk_level || null
+        }));
+
+      const weatherText = formatWeatherForPrompt({
+        condition: riskStats?.condition,
+        temp: riskStats?.temp,
+        humidity: riskStats?.humidity
+      });
+      const tags = Array.isArray((activeRoute as any)?.tags) ? (activeRoute as any).tags : [];
+
+      const prompt = `Before starting this hike, generate a practical preparation checklist for this route.
+
+Route: ${activeRoute.name}
+Distance: ${activeRoute.distance}
+Duration: ${activeRoute.duration}
+Difficulty: ${activeRoute.difficulty}/5
+Route tags: ${tags.length > 0 ? tags.join(', ') : 'N/A'}
+Today's weather: ${weatherText}
+Nearby route reminders (risk/facilities): ${nearbyRouteReminders.length > 0 ? JSON.stringify(nearbyRouteReminders) : 'None'}
+
+Please include what to wear, rain gear decision, water amount, snack suggestion, and key risks.
+Output in English, concise, actionable, and DO NOT exceed 60 words.`;
+
+      const trimToMaxWords = (text: string, maxWords: number): string => {
+        const raw = String(text || '').trim();
+        const totalWords = raw.split(/\s+/).filter(Boolean).length;
+        if (totalWords <= maxWords) return raw;
+
+        const sentenceCandidates = raw.match(/[^.!?]+[.!?]/g) || [];
+        const sentences = sentenceCandidates
+          .map(s => s.trim())
+          .filter(Boolean);
+
+        if (sentences.length > 0) {
+          const picked: string[] = [];
+          let count = 0;
+          for (const sentence of sentences) {
+            const w = sentence.split(/\s+/).filter(Boolean).length;
+            if (count + w > maxWords) break;
+            picked.push(sentence);
+            count += w;
+          }
+          if (picked.length > 0) return picked.join(' ');
+        }
+
+        // Fallback: cut to word limit and close with a period so it still ends like a sentence.
+        const words = raw.split(/\s+/).filter(Boolean).slice(0, maxWords);
+        return `${words.join(' ')}.`;
+      };
+
+      const thinkingId = `pre-hike-thinking-${Date.now()}`;
+      setIsGeneratingPreHikeAdvice(true);
+      setMessages(prev => [...prev, { id: thinkingId, sender: 'ai', text: 'Generating route prep advice...', timestamp: new Date() }]);
+
+      try {
+        const responseText = await generateHikingAdvice(prompt, {
+          location: (userPos && typeof userPos[0] === 'number') ? `${userPos[0].toFixed(4)}, ${userPos[1].toFixed(4)}` : 'Unknown',
+          route: activeRoute?.name || 'Unknown',
+          teammates: teamMembers.map(m => m.user_name),
+          routeInfo: activeRoute?.description,
+          extraData: {
+            weather: weatherText,
+            route_tags: tags,
+            nearby_reminders: nearbyRouteReminders,
+            current_route: activeRoute ? {
+              distance: activeRoute.distance,
+              duration: activeRoute.duration,
+              difficulty: activeRoute.difficulty
+            } : null
+          }
+        });
+
+        setMessages(prev => prev.map(m => m.id === thinkingId ? { ...m, text: trimToMaxWords(responseText, 60) } : m));
+      } catch (err) {
+        console.error('Auto pre-hike advice failed', err);
+        const fallback = 'Bring breathable layers, at least 1.5-2L water, quick carbs (nuts/energy bar), and rain/sun protection based on weather. Check route reminders before starting.';
+        setMessages(prev => prev.map(m => m.id === thinkingId ? { ...m, text: fallback } : m));
+      } finally {
+        setIsGeneratingPreHikeAdvice(false);
+      }
+    };
+
+    generatePreHikeAdvice();
+  }, [activeRouteId, hasStartedHike, isReviewMode, reminderInfo.length, riskStats.condition, riskStats.temp, riskStats.humidity]);
+
   const handleAddNote = async () => {
     const content = noteContent.trim();
     if (!content || !activeRouteId) return;
     setIsNoteSubmitting(true);
     try {
+      let imageUrl = null;
+      if (noteImage) {
+        try {
+          const fileExt = noteImage.name.split('.').pop() || 'jpg';
+          const fileName = `${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
+          const filePath = `${userId}/${fileName}`;
+
+          console.log('Attempting to upload image to emotion-images bucket...');
+          
+          // Try to upload the image
+          const { error: uploadError } = await supabase.storage
+            .from('emotion-images')
+            .upload(filePath, noteImage);
+
+          if (uploadError) {
+            console.error('Error uploading image:', uploadError);
+            
+            // Check if the error is due to bucket not existing or permission issues
+            if (uploadError.message?.includes('bucket') || uploadError.message?.includes('not found')) {
+              console.warn('Bucket may not exist or have proper permissions. Skipping image upload.');
+              // We'll still save the note without the image
+            } else {
+              // Other upload errors
+              console.warn('Image upload failed, but continuing without image:', uploadError.message);
+            }
+          } else {
+            // Success! Get the public URL
+            const { data: { publicUrl } } = supabase.storage
+              .from('emotion-images')
+              .getPublicUrl(filePath);
+            imageUrl = publicUrl;
+            console.log('Image uploaded successfully:', imageUrl);
+          }
+        } catch (uploadError) {
+          console.error('Unexpected error during image upload:', uploadError);
+          // Continue without image
+        }
+      }
+
       const payload = {
         team_id: teamId,
         route_id: activeRouteId,
@@ -1362,14 +1571,34 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         content,
         latitude: userPos ? userPos[0] : 0,
         longitude: userPos ? userPos[1] : 0,
+        image_url: imageUrl,
         created_at: new Date().toISOString()
       };
 
       let { data, error } = await supabase
         .from('team_member_emotions')
         .insert(payload)
-        .select('id, team_id, route_id, user_id, user_name, content, latitude, longitude, created_at')
+        .select('id, team_id, route_id, user_id, user_name, content, latitude, longitude, image_url, created_at')
         .single();
+
+      if (error) {
+        // Fallback for missing image_url column
+        const fallbackPayload = {
+          team_id: teamId,
+          route_id: activeRouteId,
+          user_id: userId,
+          user_name: getSelfDisplayName(),
+          content,
+          latitude: userPos ? userPos[0] : 0,
+          longitude: userPos ? userPos[1] : 0,
+          created_at: new Date().toISOString()
+        };
+        const oldCol = 'id, team_id, route_id, user_id, user_name, content, latitude, longitude, created_at';
+        let queryOld = supabase.from('team_member_emotions').insert(fallbackPayload).select(oldCol).single();
+        const fallbackOld = await queryOld;
+        data = fallbackOld.data as any;
+        error = fallbackOld.error;
+      }
 
       // Backward compatibility: DB may not have route_id column yet.
       if (error && isMissingRouteScopeColumnError(error)) {
@@ -1382,9 +1611,10 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
             content: payload.content,
             latitude: payload.latitude,
             longitude: payload.longitude,
+            image_url: payload.image_url,
             created_at: payload.created_at
           })
-          .select('id, team_id, user_id, user_name, content, latitude, longitude, created_at')
+          .select('id, team_id, user_id, user_name, content, latitude, longitude, image_url, created_at')
           .single();
         data = fallback.data as any;
         error = fallback.error;
@@ -1392,9 +1622,13 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
 
       if (error) throw error;
       if (data) {
+        const newNote: EmotionNote = {
+          ...data,
+          imageUrl: data.image_url
+        };
         setEmotionNotes(prev => {
-          if (prev.find(note => note.id === data.id)) return prev;
-          return [...prev, data as EmotionNote];
+          if (prev.find(note => note.id === newNote.id)) return prev;
+          return [...prev, newNote];
         });
       }
       
@@ -1408,6 +1642,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       setTimeout(() => setToast(null), 3000);
       
       setNoteContent('');
+      setNoteImage(null);
+      setNoteImagePreview(null);
       setShowAddNote(false);
     } catch (e: any) {
       if (isEmotionNotePermissionError(e)) {
@@ -1432,6 +1668,8 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         setToast({ message: 'Saved locally (no DB permission)', type: 'info' });
         setTimeout(() => setToast(null), 3000);
         setNoteContent('');
+        setNoteImage(null);
+        setNoteImagePreview(null);
         setShowAddNote(false);
         return;
       }
@@ -1544,6 +1782,18 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         <button onClick={onBack} className="absolute top-6 left-4 z-[500] p-3 bg-white shadow-lg rounded-full border"><ArrowLeft size={20}/></button>
       )}
 
+      {/* Review Mode Navigation Button */}
+      {isReviewMode && (
+        <div className="absolute top-6 left-4 z-[500]">
+          {/* Back Button - Returns to previous screen */}
+          {onBack && (
+            <button onClick={onBack} className="p-3 bg-white shadow-lg rounded-full border">
+              <ArrowLeft size={20}/>
+            </button>
+          )}
+        </div>
+      )}
+
 
       {/* Save Dialog */}
       {showSaveDialog && (
@@ -1571,6 +1821,41 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                     <>
                       <button 
                         onClick={() => { 
+                          const routeShape = sanitizeRouteCoords(activeRoute?.coordinates);
+                          const routeRelatedReminders = routeShape.length > 0
+                            ? reminderInfo
+                                .map((r: any) => ({ ...r, __coords: getCoords(r) }))
+                                .filter((r: any) => Array.isArray(r.__coords) && isPointNearRoute(r.__coords[0], r.__coords[1], routeShape, 200))
+                                .map((r: any) => ({
+                                  id: r.id,
+                                  name: r.name,
+                                  type: r.type,
+                                  category: r.category,
+                                  ai_prompt: r.ai_prompt,
+                                  coordinates: r.__coords
+                                }))
+                            : [];
+                          const routeIdStr = String(activeRoute?.id || '');
+                          const isAiGeneratedRoute =
+                            routeIdStr.startsWith('ai_gen_') ||
+                            routeIdStr.startsWith('ai-route') ||
+                            routeIdStr.startsWith('ai_') ||
+                            routeIdStr.includes('ai_gen');
+                          const aiMatchedRouteSnapshot = {
+                            route_id: activeRoute?.id || null,
+                            route_name: activeRoute?.name || trackName,
+                            distance: activeRoute?.distance || (recordedPath.length * 0.005).toFixed(2) + 'km',
+                            duration: activeRoute?.duration || formatTime(elapsedTime),
+                            difficulty: activeRoute?.difficulty || 0,
+                            reason: Array.isArray((activeRoute as any)?.matchReasons)
+                              ? (activeRoute as any).matchReasons.join(', ')
+                              : 'Saved from AI generated route',
+                            route_data: {
+                              coordinates: routeShape.length > 0 ? routeShape : recordedPath,
+                              segments: (activeRoute as any)?.segments || []
+                            }
+                          };
+
                           onSaveTrack({ 
                             id: Date.now().toString(), 
                             name: trackName, 
@@ -1578,8 +1863,14 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                             duration: formatTime(elapsedTime), 
                             distance: (recordedPath.length * 0.005).toFixed(2) + 'km', 
                             difficulty: activeRoute?.difficulty || 0, 
-                            coordinates: recordedPath, 
-                            waypoints: buildCollectedWaypoints(includeEmotionNotesOnSave)
+                            coordinates: routeShape.length > 0 ? routeShape : recordedPath, 
+                            waypoints: buildCollectedWaypoints(includeEmotionNotesOnSave, { includeReminders: false }),
+                            routeId: activeRoute?.id || null,
+                            routeName: activeRoute?.name || trackName,
+                            routeShape: routeShape.length > 0 ? routeShape : recordedPath,
+                            relatedReminders: routeRelatedReminders,
+                            aiGenerated: isAiGeneratedRoute,
+                            aiMatchedRoutes: isAiGeneratedRoute ? [aiMatchedRouteSnapshot] : undefined
                           }); 
                           setShowSaveDialog(false); 
                           if(onBack) onBack(); 
@@ -1830,12 +2121,12 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                  >
                    <Check size={panelMode === 'chat' ? 18 : 20}/>
                  </button>
-                 <button onClick={() => { 
-                   if(window.confirm('Quit?')) {
-                     resetHikeStore();
-                     onBack && onBack(); 
-                   }
-                 }} className={`bg-white rounded-full shadow-lg text-gray-500 border border-white/30 ${panelMode === 'chat' ? 'p-3' : 'p-3.5'}`}><X size={panelMode === 'chat' ? 18 : 20}/></button>
+                 <button
+                   onClick={() => setShowQuitConfirm(true)}
+                   className={`bg-white rounded-full shadow-lg text-gray-500 border border-white/30 ${panelMode === 'chat' ? 'p-3' : 'p-3.5'}`}
+                 >
+                   <X size={panelMode === 'chat' ? 18 : 20}/>
+                 </button>
                </>
              )}
           </div>
@@ -1843,11 +2134,50 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         
         {/* Info Toggle (Left Side) */}
         {activeRoute && (
-          <div className="absolute top-24 left-4 z-[500]">
+          <div className="absolute top-24 left-4 z-[500] flex flex-col gap-2">
             <button onClick={() => setShowRouteInfo(true)} className="p-3 bg-white/90 rounded-full shadow-lg text-hike-green border border-white/40 backdrop-blur-sm"><Info size={24} /></button>
+            {isReviewMode && (
+              <button
+                onClick={() => setShowRemindersInReview(prev => !prev)}
+                className={`p-3 rounded-full shadow-lg border border-white/40 backdrop-blur-sm ${
+                  showRemindersInReview ? 'bg-white/90 text-blue-600' : 'bg-white/90 text-gray-400'
+                }`}
+                title={showRemindersInReview ? 'Hide route reminders' : 'Show route reminders'}
+              >
+                <Bell size={22} />
+              </button>
+            )}
           </div>
         )}
       </div>
+
+      {/* Emotion Note Modal */}
+      {showQuitConfirm && (
+        <div className="absolute inset-0 z-[2500] bg-black/40 backdrop-blur-sm flex items-center justify-center p-6 animate-fade-in" onClick={() => setShowQuitConfirm(false)}>
+          <div className="bg-white rounded-3xl w-full max-w-xs p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-black text-gray-900 mb-2">Quit Hike?</h3>
+            <p className="text-sm text-gray-600 mb-5">You can still save before quitting.</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowQuitConfirm(false)}
+                className="flex-1 bg-gray-100 text-gray-700 py-2.5 rounded-xl font-bold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowQuitConfirm(false);
+                  resetHikeStore();
+                  onBack && onBack();
+                }}
+                className="flex-1 bg-gray-900 text-white py-2.5 rounded-xl font-bold"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Emotion Note Modal */}
       {showAddNote && (
@@ -1869,17 +2199,50 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                        placeholder="Write something about this spot..." 
                        className="w-full bg-transparent border-none outline-none resize-none h-32 text-gray-700 font-medium"
                     />
+                    
+                    {noteImagePreview ? (
+                      <div className="relative mt-2">
+                        <img src={noteImagePreview} alt="Preview" className="w-full h-32 object-cover rounded-xl border border-gray-200" />
+                        <button 
+                          onClick={() => { setNoteImage(null); setNoteImagePreview(null); }}
+                          className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full hover:bg-black/70"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="mt-2 flex justify-end">
+                        <label className="cursor-pointer text-gray-500 hover:text-hike-green transition-colors flex items-center gap-1 text-sm font-bold bg-white px-3 py-1.5 rounded-full border border-gray-200 shadow-sm">
+                          <Camera size={16} />
+                          <span>Add Photo</span>
+                          <input 
+                            type="file" 
+                            accept="image/*" 
+                            className="hidden" 
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                setNoteImage(file);
+                                const reader = new FileReader();
+                                reader.onloadend = () => setNoteImagePreview(reader.result as string);
+                                reader.readAsDataURL(file);
+                              }
+                            }} 
+                          />
+                        </label>
+                      </div>
+                    )}
                  </div>
                  
-                 <div className="flex gap-2">
+                 <div className="flex flex-wrap gap-2">
                     {['🏔️ Great', '😴 Tired', '📸 Scenic', '💧 Need Water'].map(tag => (
-                       <button 
-                          key={tag} 
-                          onClick={() => setNoteContent(prev => prev ? `${prev} ${tag}` : tag)}
-                          className="px-3 py-1.5 bg-gray-100 rounded-full text-[10px] font-bold text-gray-600 hover:bg-gray-200"
-                       >
-                          {tag}
-                       </button>
+                      <button
+                        key={tag}
+                        onClick={() => setNoteContent(prev => (prev ? `${prev} ${tag}` : tag))}
+                        className="px-3 py-1.5 rounded-full bg-white border border-gray-200 text-xs font-semibold text-gray-700 hover:bg-orange-50 hover:border-orange-200 transition-colors"
+                      >
+                        {tag}
+                      </button>
                     ))}
                  </div>
 
@@ -2019,7 +2382,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                     </div>
                   ))}
                   {panelMode === 'map' && messages.filter(m => m.sender === 'ai').length === 0 && (
-                    <div className="text-xs text-gray-400">AI Guide is ready.</div>
+                    <div className="text-xs text-gray-400">{isGeneratingPreHikeAdvice ? 'Generating route prep advice...' : 'AI Guide is ready.'}</div>
                   )}
                </div>
             )}
@@ -2030,17 +2393,18 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                 <input value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} placeholder="Ask AI..." className="flex-1 bg-gray-100 rounded-full px-4 py-2 text-sm outline-none" />
                 <button onClick={() => handleSendMessage()} className="p-2 bg-hike-green text-white rounded-full shadow-sm"><Send size={18} /></button>
              </div>
-           ) : (
+         ) : (
              <button
                onClick={() => { setChatType('ai'); setPanelMode('chat'); }}
-               className="mx-3 sm:mx-4 mb-[calc(4.75rem+env(safe-area-inset-bottom))] sm:mb-[calc(5rem+env(safe-area-inset-bottom))] h-7 sm:h-8 rounded-full bg-white/95 border border-gray-200 shadow-sm text-gray-400 text-[11px] sm:text-xs flex items-center justify-center gap-2 hover:text-gray-600 transition-colors"
+               className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 bg-gradient-to-br from-hike-green to-emerald-600 text-white px-5 py-3 rounded-full shadow-2xl shadow-emerald-500/40 flex items-center justify-center gap-2 font-bold active:scale-95 transition-all border-2 border-white/30 z-[600]"
+               title="Ask AI"
              >
-               <span className="w-2 h-2 bg-hike-green rounded-full"></span>
-               Tap to ask AI
+               <Sparkles size={20} />
+               <span>Ask AI</span>
              </button>
            )
          )}
-      </div>
+       </div>
 
       {/* Upload Modal (Moved here to ensure it's on top) */}
       {showUploadModal && (
