@@ -1645,13 +1645,11 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       {isReviewMode && (
         <div className="absolute top-6 left-4 z-[500]">
           {/* Back Button - Returns to previous screen */}
-          <button 
-            onClick={onBack} 
-            className="p-3 bg-white shadow-lg rounded-full border hover:bg-gray-50 transition-colors"
-            title="Back to previous screen"
-          >
-            <ArrowLeft size={20}/>
-          </button>
+          {onBack && (
+            <button onClick={onBack} className="p-3 bg-white shadow-lg rounded-full border">
+              <ArrowLeft size={20}/>
+            </button>
+          )}
         </div>
       )}
 
@@ -2017,13 +2015,14 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                  
                  <div className="flex flex-wrap gap-2">
                     {['🏔️ Great', '😴 Tired', '📸 Scenic', '💧 Need Water'].map(tag => (
-                       <button 
-                          key={tag} 
-                          onClick={() => setNoteContent(prev => prev ? `${prev} ${tag}` : tag)}
-                          className="px-3 py-1.5 bg-gray-100 rounded-full text-[10px] font-bold text-gray-600 hover:bg-gray-200"
-                       >
-                          {tag}
-                       </button>
+             <button
+               onClick={() => { setChatType('ai'); setPanelMode('chat'); }}
+               className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 bg-gradient-to-br from-hike-green to-emerald-600 text-white px-5 py-3 rounded-full shadow-2xl shadow-emerald-500/40 flex items-center justify-center gap-2 font-bold active:scale-95 transition-all border-2 border-white/30 z-[600]"
+               title="Ask AI"
+             >
+               <Sparkles size={20} />
+               <span>Ask AI</span>
+             </button>
                     ))}
                  </div>
 
@@ -2177,10 +2176,11 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
          ) : (
              <button
                onClick={() => { setChatType('ai'); setPanelMode('chat'); }}
-               className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 w-14 h-14 rounded-full bg-gradient-to-br from-hike-green to-emerald-600 text-white shadow-2xl shadow-emerald-500/40 flex items-center justify-center active:scale-95 transition-all border-2 border-white/30 z-[600]"
+               className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 bg-gradient-to-br from-hike-green to-emerald-600 text-white px-5 py-3 rounded-full shadow-2xl shadow-emerald-500/40 flex items-center justify-center gap-2 font-bold active:scale-95 transition-all border-2 border-white/30 z-[600]"
                title="Ask AI"
              >
-               <Sparkles size={24} />
+               <Sparkles size={20} />
+               <span>Ask AI</span>
              </button>
            )
          )}

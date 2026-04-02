@@ -3200,12 +3200,12 @@ const PlanningView: React.FC<PlanningViewProps> = ({
              onClick={() => { setViewMode('start_hiking'); }}
                 className="bg-orange-50 p-3 rounded-xl border border-orange-100 flex items-center gap-3 transition-transform active:scale-95 shadow-sm"
             >
-              <div className="bg-orange-100 p-2 rounded-full text-orange-600">
-                <MapPin size={20} />
+              <div className="bg-orange-100 p-2 rounded-full text-orange-600 flex items-center justify-center">
+                <Sparkles size={20} />
               </div>
               <div className="text-left">
-                <div className="font-bold text-sm text-gray-800">Start Hiking</div>
-                <div className="text-xs text-gray-500">Find Routes</div>
+                <div className="font-bold text-sm text-gray-800">AI Route Matching</div>
+                <div className="text-xs text-gray-500">Start Hiking</div>
               </div>
            </button>
            <button 
@@ -3228,14 +3228,11 @@ const PlanningView: React.FC<PlanningViewProps> = ({
         <div className="mb-4">
           <input
             type="text"
-            placeholder="Search by trail name (e.g. Hong Kong Trail Sec 1)..."
+            placeholder="searching by keywords (e.g. Hong Kong trail)"
             value={routeSearchQuery}
             onChange={e => handleRouteSearch(e.target.value)}
             className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:border-hike-green text-sm"
           />
-          <p className="text-xs text-black-600 mt-2 px-1 font-semibold">
-            💡Hint: Official Trails and Community Shared Route can only be searched through keyword.
-          </p>
         </div>
         <div className="flex justify-between items-center mb-2">
             <h3 className="font-bold text-gray-700">
