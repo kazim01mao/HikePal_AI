@@ -1550,11 +1550,19 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
               console.warn('Image upload failed, but continuing without image:', uploadError.message);
             }
           } else {
-            // Success! Get the public URL
-            const { data: { publicUrl } } = supabase.storage
+            // Success! Prefer a long-lived signed URL so teammates can view photos even if bucket isn't public.
+            const signed = await supabase.storage
               .from('emotion-images')
-              .getPublicUrl(filePath);
-            imageUrl = publicUrl;
+              .createSignedUrl(filePath, 60 * 60 * 24 * 365); // 1 year
+
+            if (!signed.error && signed.data?.signedUrl) {
+              imageUrl = signed.data.signedUrl;
+            } else {
+              const { data: { publicUrl } } = supabase.storage
+                .from('emotion-images')
+                .getPublicUrl(filePath);
+              imageUrl = publicUrl;
+            }
             console.log('Image uploaded successfully:', imageUrl);
           }
         } catch (uploadError) {
