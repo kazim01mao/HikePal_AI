@@ -1454,14 +1454,35 @@ Route tags: ${tags.length > 0 ? tags.join(', ') : 'N/A'}
 Today's weather: ${weatherText}
 Nearby route reminders (risk/facilities): ${nearbyRouteReminders.length > 0 ? JSON.stringify(nearbyRouteReminders) : 'None'}
 
-Please include:
-1) What to wear (layers/rain/wind/sun)
-2) Whether to bring umbrella/rain gear
-3) Water amount estimate (for one person)
-4) Food/snack suggestion (for one person)
-5) 2-3 risk warnings from route/weather
+Please include what to wear, rain gear decision, water amount, snack suggestion, and key risks.
+Output in English, concise, actionable, and DO NOT exceed 60 words.`;
 
-Keep it concise, actionable, and in English.`;
+      const trimToMaxWords = (text: string, maxWords: number): string => {
+        const raw = String(text || '').trim();
+        const totalWords = raw.split(/\s+/).filter(Boolean).length;
+        if (totalWords <= maxWords) return raw;
+
+        const sentenceCandidates = raw.match(/[^.!?]+[.!?]/g) || [];
+        const sentences = sentenceCandidates
+          .map(s => s.trim())
+          .filter(Boolean);
+
+        if (sentences.length > 0) {
+          const picked: string[] = [];
+          let count = 0;
+          for (const sentence of sentences) {
+            const w = sentence.split(/\s+/).filter(Boolean).length;
+            if (count + w > maxWords) break;
+            picked.push(sentence);
+            count += w;
+          }
+          if (picked.length > 0) return picked.join(' ');
+        }
+
+        // Fallback: cut to word limit and close with a period so it still ends like a sentence.
+        const words = raw.split(/\s+/).filter(Boolean).slice(0, maxWords);
+        return `${words.join(' ')}.`;
+      };
 
       const thinkingId = `pre-hike-thinking-${Date.now()}`;
       setIsGeneratingPreHikeAdvice(true);
@@ -1485,7 +1506,7 @@ Keep it concise, actionable, and in English.`;
           }
         });
 
-        setMessages(prev => prev.map(m => m.id === thinkingId ? { ...m, text: responseText } : m));
+        setMessages(prev => prev.map(m => m.id === thinkingId ? { ...m, text: trimToMaxWords(responseText, 60) } : m));
       } catch (err) {
         console.error('Auto pre-hike advice failed', err);
         const fallback = 'Bring breathable layers, at least 1.5-2L water, quick carbs (nuts/energy bar), and rain/sun protection based on weather. Check route reminders before starting.';
