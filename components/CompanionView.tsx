@@ -84,6 +84,16 @@ function sanitizeRouteCoords(raw: any): [number, number][] {
   return cleaned;
 }
 
+function getWaypointGlyph(note: any, imageUrl?: string): string {
+  if (imageUrl) return '📸';
+  const text = String(note || '').trim();
+  if (!text) return '🙂';
+  const emojiMatch = text.match(/(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*)/u);
+  if (emojiMatch?.[1]) return emojiMatch[1];
+  const first = Array.from(text)[0];
+  return first && first.length > 0 ? first : '🙂';
+}
+
 function parseGeographyPoint(geoObj: any): [number, number] | null {
   if (!geoObj) return null;
   if (geoObj.type === 'Point' && Array.isArray(geoObj.coordinates)) return [geoObj.coordinates[1], geoObj.coordinates[0]];
@@ -236,6 +246,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [includeEmotionNotesOnSave, setIncludeEmotionNotesOnSave] = useState(true);
   const [includeEmotionNotesOnUpload, setIncludeEmotionNotesOnUpload] = useState(true);
   const [showRouteInfo, setShowRouteInfo] = useState(false);
+  const [showQuitConfirm, setShowQuitConfirm] = useState(false);
   const [hasStartedHike, setHasStartedHike] = useState(false);
   const [alertsEnabled, setAlertsEnabled] = useState(true);
   const [actualTeamSize, setActualTeamSize] = useState<number>(1);
@@ -411,19 +422,25 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     setRiskStats({ temp: weather.temp, humidity: weather.humidity, condition: weather.condition });
   };
 
-  const buildCollectedWaypoints = (includeEmotionNotes: boolean): Waypoint[] => {
-    const reminderWaypoints = Array.from(alertedItemsRef.current).map(id => {
-      const item = reminderInfo.find(r => r.id === id);
-      const coords = getCoords(item);
-      return {
-        id: item?.id || String(id),
-        lat: coords ? coords[0] : 0,
-        lng: coords ? coords[1] : 0,
-        note: item?.name || 'Reminder',
-        type: 'reminder',
-        timestamp: new Date()
-      } as unknown as Waypoint;
-    });
+  const buildCollectedWaypoints = (
+    includeEmotionNotes: boolean,
+    options?: { includeReminders?: boolean }
+  ): Waypoint[] => {
+    const includeReminders = options?.includeReminders !== false;
+    const reminderWaypoints = includeReminders
+      ? Array.from(alertedItemsRef.current).map(id => {
+          const item = reminderInfo.find(r => r.id === id);
+          const coords = getCoords(item);
+          return {
+            id: item?.id || String(id),
+            lat: coords ? coords[0] : 0,
+            lng: coords ? coords[1] : 0,
+            note: item?.name || 'Reminder',
+            type: 'reminder',
+            timestamp: new Date()
+          } as unknown as Waypoint;
+        })
+      : [];
 
     if (!includeEmotionNotes) return reminderWaypoints;
 
@@ -433,6 +450,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
           id: `emotion-${note.id}`,
           lat: note.latitude,
           lng: note.longitude,
+          emoji: getWaypointGlyph(note.content, note.imageUrl),
           note: note.content,
           type: 'emotion',
           imageUrl: note.imageUrl,
@@ -892,8 +910,22 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
           recordedPolylineRef.current.setLatLngs(safeCoords);
           ((activeRoute as any).historyWaypoints || []).forEach((wp: any) => {
              if (wp && typeof wp.lat === 'number' && typeof wp.lng === 'number') {
-                const icon = L.divIcon({ html: `<div style="background-color: #F59E0B; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white;"></div>` });
-                L.marker([wp.lat, wp.lng], { icon }).addTo(map);
+                if (wp.type === 'reminder') return;
+                const markerEmoji = getWaypointGlyph(wp.note, wp.imageUrl);
+                const icon = L.divIcon({
+                  html: `<div style="background-color: #F59E0B; color: white; width: 22px; height: 22px; border-radius: 50%; border: 2px solid white; display:flex; align-items:center; justify-content:center; font-size: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.35);">${markerEmoji}</div>`,
+                  className: '',
+                  iconSize: [22, 22],
+                  iconAnchor: [11, 11],
+                  popupAnchor: [0, -11]
+                });
+                const popupContent = `
+                  <div style="font-family: system-ui, sans-serif; padding: 4px; max-width: 220px;">
+                    ${wp.imageUrl ? `<img src="${String(wp.imageUrl)}" alt="Waypoint" style="width: 100%; border-radius: 8px; margin-bottom: 8px; max-height: 120px; object-fit: cover;" />` : ''}
+                    <div style="font-size: 13px; color: #111827; line-height: 1.4;">${String(wp.note || 'Emotion Note')}</div>
+                  </div>
+                `;
+                L.marker([wp.lat, wp.lng], { icon }).addTo(map).bindPopup(popupContent);
              }
           });
         }
@@ -987,11 +1019,13 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     if (reminderInfo.length === 0) return;
 
     let markersToShow = reminderInfo;
-    if (isRecording && activeRoute && activeRoute.coordinates) {
+    if (activeRoute && activeRoute.coordinates && activeRoute.coordinates.length > 0) {
       markersToShow = reminderInfo.filter(r => {
         const coords = getCoords(r);
-        return coords && isPointNearRoute(coords[0], coords[1], activeRoute.coordinates || [], 300);
+        return coords && isPointNearRoute(coords[0], coords[1], activeRoute.coordinates || [], 200);
       });
+    } else if (!isRecording) {
+      markersToShow = [];
     }
 
     markersToShow.forEach(r => {
@@ -1113,8 +1147,9 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       const isSelf = note.user_id === userId;
       const displayName = (note.user_name || '').trim() || (isSelf ? 'Me' : 'Teammate');
       const markerColor = isSelf ? '#F97316' : '#14B8A6';
+      const noteEmoji = getWaypointGlyph(note.content, note.imageUrl);
       const icon = L.divIcon({
-        html: `<div style="background-color: ${markerColor}; color: white; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display:flex; align-items:center; justify-content:center; font-size:12px; box-shadow: 0 2px 4px rgba(0,0,0,0.35);">${note.imageUrl ? '📸' : '�'}</div>`,
+        html: `<div style="background-color: ${markerColor}; color: white; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display:flex; align-items:center; justify-content:center; font-size:12px; box-shadow: 0 2px 4px rgba(0,0,0,0.35);">${noteEmoji}</div>`,
         className: '',
         iconSize: [24, 24],
         iconAnchor: [12, 12],
@@ -1680,6 +1715,41 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                     <>
                       <button 
                         onClick={() => { 
+                          const routeShape = sanitizeRouteCoords(activeRoute?.coordinates);
+                          const routeRelatedReminders = routeShape.length > 0
+                            ? reminderInfo
+                                .map((r: any) => ({ ...r, __coords: getCoords(r) }))
+                                .filter((r: any) => Array.isArray(r.__coords) && isPointNearRoute(r.__coords[0], r.__coords[1], routeShape, 200))
+                                .map((r: any) => ({
+                                  id: r.id,
+                                  name: r.name,
+                                  type: r.type,
+                                  category: r.category,
+                                  ai_prompt: r.ai_prompt,
+                                  coordinates: r.__coords
+                                }))
+                            : [];
+                          const routeIdStr = String(activeRoute?.id || '');
+                          const isAiGeneratedRoute =
+                            routeIdStr.startsWith('ai_gen_') ||
+                            routeIdStr.startsWith('ai-route') ||
+                            routeIdStr.startsWith('ai_') ||
+                            routeIdStr.includes('ai_gen');
+                          const aiMatchedRouteSnapshot = {
+                            route_id: activeRoute?.id || null,
+                            route_name: activeRoute?.name || trackName,
+                            distance: activeRoute?.distance || (recordedPath.length * 0.005).toFixed(2) + 'km',
+                            duration: activeRoute?.duration || formatTime(elapsedTime),
+                            difficulty: activeRoute?.difficulty || 0,
+                            reason: Array.isArray((activeRoute as any)?.matchReasons)
+                              ? (activeRoute as any).matchReasons.join(', ')
+                              : 'Saved from AI generated route',
+                            route_data: {
+                              coordinates: routeShape.length > 0 ? routeShape : recordedPath,
+                              segments: (activeRoute as any)?.segments || []
+                            }
+                          };
+
                           onSaveTrack({ 
                             id: Date.now().toString(), 
                             name: trackName, 
@@ -1687,8 +1757,14 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                             duration: formatTime(elapsedTime), 
                             distance: (recordedPath.length * 0.005).toFixed(2) + 'km', 
                             difficulty: activeRoute?.difficulty || 0, 
-                            coordinates: recordedPath, 
-                            waypoints: buildCollectedWaypoints(includeEmotionNotesOnSave)
+                            coordinates: routeShape.length > 0 ? routeShape : recordedPath, 
+                            waypoints: buildCollectedWaypoints(includeEmotionNotesOnSave, { includeReminders: false }),
+                            routeId: activeRoute?.id || null,
+                            routeName: activeRoute?.name || trackName,
+                            routeShape: routeShape.length > 0 ? routeShape : recordedPath,
+                            relatedReminders: routeRelatedReminders,
+                            aiGenerated: isAiGeneratedRoute,
+                            aiMatchedRoutes: isAiGeneratedRoute ? [aiMatchedRouteSnapshot] : undefined
                           }); 
                           setShowSaveDialog(false); 
                           if(onBack) onBack(); 
@@ -1939,12 +2015,12 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                  >
                    <Check size={panelMode === 'chat' ? 18 : 20}/>
                  </button>
-                 <button onClick={() => { 
-                   if(window.confirm('Quit?')) {
-                     resetHikeStore();
-                     onBack && onBack(); 
-                   }
-                 }} className={`bg-white rounded-full shadow-lg text-gray-500 border border-white/30 ${panelMode === 'chat' ? 'p-3' : 'p-3.5'}`}><X size={panelMode === 'chat' ? 18 : 20}/></button>
+                 <button
+                   onClick={() => setShowQuitConfirm(true)}
+                   className={`bg-white rounded-full shadow-lg text-gray-500 border border-white/30 ${panelMode === 'chat' ? 'p-3' : 'p-3.5'}`}
+                 >
+                   <X size={panelMode === 'chat' ? 18 : 20}/>
+                 </button>
                </>
              )}
           </div>
@@ -1957,6 +2033,34 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
           </div>
         )}
       </div>
+
+      {/* Emotion Note Modal */}
+      {showQuitConfirm && (
+        <div className="absolute inset-0 z-[2500] bg-black/40 backdrop-blur-sm flex items-center justify-center p-6 animate-fade-in" onClick={() => setShowQuitConfirm(false)}>
+          <div className="bg-white rounded-3xl w-full max-w-xs p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-black text-gray-900 mb-2">Quit Hike?</h3>
+            <p className="text-sm text-gray-600 mb-5">You can still save before quitting.</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowQuitConfirm(false)}
+                className="flex-1 bg-gray-100 text-gray-700 py-2.5 rounded-xl font-bold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowQuitConfirm(false);
+                  resetHikeStore();
+                  onBack && onBack();
+                }}
+                className="flex-1 bg-gray-900 text-white py-2.5 rounded-xl font-bold"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Emotion Note Modal */}
       {showAddNote && (
@@ -2015,14 +2119,13 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                  
                  <div className="flex flex-wrap gap-2">
                     {['🏔️ Great', '😴 Tired', '📸 Scenic', '💧 Need Water'].map(tag => (
-             <button
-               onClick={() => { setChatType('ai'); setPanelMode('chat'); }}
-               className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 bg-gradient-to-br from-hike-green to-emerald-600 text-white px-5 py-3 rounded-full shadow-2xl shadow-emerald-500/40 flex items-center justify-center gap-2 font-bold active:scale-95 transition-all border-2 border-white/30 z-[600]"
-               title="Ask AI"
-             >
-               <Sparkles size={20} />
-               <span>Ask AI</span>
-             </button>
+                      <button
+                        key={tag}
+                        onClick={() => setNoteContent(prev => (prev ? `${prev} ${tag}` : tag))}
+                        className="px-3 py-1.5 rounded-full bg-white border border-gray-200 text-xs font-semibold text-gray-700 hover:bg-orange-50 hover:border-orange-200 transition-colors"
+                      >
+                        {tag}
+                      </button>
                     ))}
                  </div>
 

@@ -38,6 +38,7 @@ export interface Waypoint {
   lat: number;
   lng: number;
   type: 'photo' | 'marker' | 'emotion' | 'reminder';
+  emoji?: string;
   note?: string;
   imageUrl?: string;
   uploadedRouteImageId?: string; // New field to link waypoints to uploaded_route_images
@@ -52,6 +53,22 @@ export interface Track {
   difficulty: number;
   coordinates: [number, number][];
   waypoints: Waypoint[];
+  routeId?: string | null;
+  routeName?: string | null;
+  routeShape?: [number, number][];
+  relatedReminders?: Array<{
+    id: string | number;
+    name?: string;
+    type?: string;
+    category?: string;
+    ai_prompt?: string;
+    coordinates?: [number, number];
+  }>;
+  aiGenerated?: boolean;
+  aiUserMood?: string | null;
+  aiUserDifficulty?: string | null;
+  aiUserCondition?: string | null;
+  aiMatchedRoutes?: Array<Record<string, any>>;
 }
 
 export interface Message {

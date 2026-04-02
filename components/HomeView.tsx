@@ -238,6 +238,22 @@ const HomeView: React.FC<HomeViewProps> = ({ user, onLogout, myTracks, myGroupHi
     return cleaned;
   };
 
+  const getDisplayWaypoints = (track: Track | null): any[] => {
+    if (!track || !Array.isArray(track.waypoints)) return [];
+    return track.waypoints.filter((wp: any) => wp && wp.type !== 'reminder');
+  };
+
+  const resolveWaypointEmoji = (wp: any): string => {
+    if (wp?.imageUrl) return '📸';
+    if (typeof wp?.emoji === 'string' && wp.emoji.trim().length > 0) return wp.emoji.trim();
+    const noteText = String(wp?.note || '').trim();
+    if (!noteText) return '🙂';
+    const emojiMatch = noteText.match(/(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*)/u);
+    if (emojiMatch?.[1]) return emojiMatch[1];
+    const firstChar = Array.from(noteText)[0];
+    return firstChar && firstChar.length > 0 ? firstChar : '🙂';
+  };
+
   const resolveSnapshotCoords = (snapshot: any): [number, number][] => {
     if (!snapshot) return [];
     const direct = sanitizeRouteCoords(snapshot.coordinates);
@@ -575,9 +591,10 @@ const HomeView: React.FC<HomeViewProps> = ({ user, onLogout, myTracks, myGroupHi
       }).addTo(map);
       map.fitBounds(polyline.getBounds(), { padding: [20, 20] });
 
-      // Add waypoints to map
-      if (selectedTrack.waypoints && selectedTrack.waypoints.length > 0) {
-        selectedTrack.waypoints.forEach((wp: any) => {
+      // Add user waypoint markers to map (hide reminder_info markers)
+      const displayWaypoints = getDisplayWaypoints(selectedTrack);
+      if (displayWaypoints.length > 0) {
+        displayWaypoints.forEach((wp: any) => {
           if (wp && typeof wp.lat === 'number' && typeof wp.lng === 'number') {
             const isEmotion = wp.type === 'emotion';
             const isPhoto = wp.type === 'photo';
@@ -586,7 +603,7 @@ const HomeView: React.FC<HomeViewProps> = ({ user, onLogout, myTracks, myGroupHi
             let color = '#F59E0B'; // default marker color
             
             if (isEmotion) {
-              emoji = wp.imageUrl ? '📸' : '';
+              emoji = resolveWaypointEmoji(wp);
               color = '#EA580C'; // orange
             } else if (isPhoto) {
               emoji = '📸';
@@ -1217,11 +1234,11 @@ const HomeView: React.FC<HomeViewProps> = ({ user, onLogout, myTracks, myGroupHi
                   </div>
                 </div>
 
-                {selectedTrack.waypoints && selectedTrack.waypoints.length > 0 && (
+                {getDisplayWaypoints(selectedTrack).length > 0 && (
                   <div>
                     <h4 className="text-xs text-gray-400 font-black uppercase tracking-widest mb-3">Waypoints Captured</h4>
                       <div className="max-h-80 overflow-y-auto">
-                        {selectedTrack.waypoints.map((wp: any, idx: number) => (
+                        {getDisplayWaypoints(selectedTrack).map((wp: any, idx: number) => (
                           <div key={idx} className="flex flex-col gap-2 bg-white p-3 rounded-xl border border-gray-100 shadow-sm mb-2">
                             <div className="flex items-center gap-3">
                               <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
