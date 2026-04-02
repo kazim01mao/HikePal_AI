@@ -247,6 +247,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [includeEmotionNotesOnUpload, setIncludeEmotionNotesOnUpload] = useState(true);
   const [showRouteInfo, setShowRouteInfo] = useState(false);
   const [showQuitConfirm, setShowQuitConfirm] = useState(false);
+  const [showRemindersInReview, setShowRemindersInReview] = useState(true);
   const [hasStartedHike, setHasStartedHike] = useState(false);
   const [alertsEnabled, setAlertsEnabled] = useState(true);
   const [actualTeamSize, setActualTeamSize] = useState<number>(1);
@@ -254,7 +255,9 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [aiHighlights, setAiHighlights] = useState<string>('');
   const [isLoadingHighlights, setIsLoadingHighlights] = useState(false);
   const [toast, setToast] = useState<{message: string, type: 'success' | 'info'} | null>(null);
+  const [isGeneratingPreHikeAdvice, setIsGeneratingPreHikeAdvice] = useState(false);
   const activeRouteId = activeRoute?.id || null;
+  const preHikeAdviceKeyRef = useRef<string | null>(null);
 
   const appendRecordedPoint = (nextPoint: [number, number]) => {
     setRecordedPath(prev => {
@@ -1016,6 +1019,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     reminderMarkersRef.current.forEach(m => m.remove());
     reminderMarkersRef.current = [];
 
+    if (isReviewMode && !showRemindersInReview) return;
     if (reminderInfo.length === 0) return;
 
     let markersToShow = reminderInfo;
@@ -1106,7 +1110,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         reminderMarkersRef.current.push(marker);
       }
     });
-  }, [reminderInfo, mapInstanceRef.current, isRecording, activeRoute]);
+  }, [reminderInfo, mapInstanceRef.current, isRecording, activeRoute, isReviewMode, showRemindersInReview]);
 
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -1412,6 +1416,87 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       }));
     }
   }, [activeRoute, hasStartedHike]);
+
+  useEffect(() => {
+    const generatePreHikeAdvice = async () => {
+      if (!activeRoute || hasStartedHike || isReviewMode) return;
+
+      const routeKey = `${activeRoute.id || activeRoute.name || 'route'}::${new Date().toDateString()}`;
+      if (preHikeAdviceKeyRef.current === routeKey) return;
+      preHikeAdviceKeyRef.current = routeKey;
+
+      const nearbyRouteReminders = reminderInfo
+        .filter(r => {
+          const coords = getCoords(r);
+          return coords && activeRoute.coordinates && isPointNearRoute(coords[0], coords[1], activeRoute.coordinates || [], 200);
+        })
+        .map(r => ({
+          name: r.name,
+          info: r.ai_prompt,
+          category: r.category,
+          risk_level: r.risk_level || null
+        }));
+
+      const weatherText = formatWeatherForPrompt({
+        condition: riskStats?.condition,
+        temp: riskStats?.temp,
+        humidity: riskStats?.humidity
+      });
+      const tags = Array.isArray((activeRoute as any)?.tags) ? (activeRoute as any).tags : [];
+
+      const prompt = `Before starting this hike, generate a practical preparation checklist for this route.
+
+Route: ${activeRoute.name}
+Distance: ${activeRoute.distance}
+Duration: ${activeRoute.duration}
+Difficulty: ${activeRoute.difficulty}/5
+Route tags: ${tags.length > 0 ? tags.join(', ') : 'N/A'}
+Today's weather: ${weatherText}
+Nearby route reminders (risk/facilities): ${nearbyRouteReminders.length > 0 ? JSON.stringify(nearbyRouteReminders) : 'None'}
+
+Please include:
+1) What to wear (layers/rain/wind/sun)
+2) Whether to bring umbrella/rain gear
+3) Water amount estimate (for one person)
+4) Food/snack suggestion (for one person)
+5) 2-3 risk warnings from route/weather
+
+Keep it concise, actionable, and in English.`;
+
+      const thinkingId = `pre-hike-thinking-${Date.now()}`;
+      setIsGeneratingPreHikeAdvice(true);
+      setMessages(prev => [...prev, { id: thinkingId, sender: 'ai', text: 'Generating route prep advice...', timestamp: new Date() }]);
+
+      try {
+        const responseText = await generateHikingAdvice(prompt, {
+          location: (userPos && typeof userPos[0] === 'number') ? `${userPos[0].toFixed(4)}, ${userPos[1].toFixed(4)}` : 'Unknown',
+          route: activeRoute?.name || 'Unknown',
+          teammates: teamMembers.map(m => m.user_name),
+          routeInfo: activeRoute?.description,
+          extraData: {
+            weather: weatherText,
+            route_tags: tags,
+            nearby_reminders: nearbyRouteReminders,
+            current_route: activeRoute ? {
+              distance: activeRoute.distance,
+              duration: activeRoute.duration,
+              difficulty: activeRoute.difficulty
+            } : null
+          }
+        });
+
+        setMessages(prev => prev.map(m => m.id === thinkingId ? { ...m, text: responseText } : m));
+      } catch (err) {
+        console.error('Auto pre-hike advice failed', err);
+        const fallback = 'Bring breathable layers, at least 1.5-2L water, quick carbs (nuts/energy bar), and rain/sun protection based on weather. Check route reminders before starting.';
+        setMessages(prev => prev.map(m => m.id === thinkingId ? { ...m, text: fallback } : m));
+      } finally {
+        setIsGeneratingPreHikeAdvice(false);
+      }
+    };
+
+    generatePreHikeAdvice();
+  }, [activeRouteId, hasStartedHike, isReviewMode, reminderInfo.length, riskStats.condition, riskStats.temp, riskStats.humidity]);
 
   const handleAddNote = async () => {
     const content = noteContent.trim();
@@ -2028,8 +2113,19 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
         
         {/* Info Toggle (Left Side) */}
         {activeRoute && (
-          <div className="absolute top-24 left-4 z-[500]">
+          <div className="absolute top-24 left-4 z-[500] flex flex-col gap-2">
             <button onClick={() => setShowRouteInfo(true)} className="p-3 bg-white/90 rounded-full shadow-lg text-hike-green border border-white/40 backdrop-blur-sm"><Info size={24} /></button>
+            {isReviewMode && (
+              <button
+                onClick={() => setShowRemindersInReview(prev => !prev)}
+                className={`p-3 rounded-full shadow-lg border border-white/40 backdrop-blur-sm ${
+                  showRemindersInReview ? 'bg-white/90 text-blue-600' : 'bg-white/90 text-gray-400'
+                }`}
+                title={showRemindersInReview ? 'Hide route reminders' : 'Show route reminders'}
+              >
+                <Bell size={22} />
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -2265,7 +2361,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                     </div>
                   ))}
                   {panelMode === 'map' && messages.filter(m => m.sender === 'ai').length === 0 && (
-                    <div className="text-xs text-gray-400">AI Guide is ready.</div>
+                    <div className="text-xs text-gray-400">{isGeneratingPreHikeAdvice ? 'Generating route prep advice...' : 'AI Guide is ready.'}</div>
                   )}
                </div>
             )}
