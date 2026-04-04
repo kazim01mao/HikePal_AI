@@ -294,6 +294,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<any>(null);
   const isReviewMode = !!(activeRoute as any)?.isReview;
+  const isCommunityRoute = !!(activeRoute as any)?.isUserPublished;
 
   const getTeamMemberNameStorageKey = (id: string) => `hikepal_team_member_name_${id}`;
 
@@ -474,6 +475,10 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       setEmotionNotes([]);
       return;
     }
+    if (!isCommunityRoute) {
+      setEmotionNotes([]);
+      return;
+    }
 
     try {
       const scopeCol = 'id, team_id, route_id, user_id, user_name, content, latitude, longitude, image_url, created_at';
@@ -521,7 +526,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       }
       
       if (error) throw error;
-      const notes = Array.isArray(data) ? data.map(n => ({...n, imageUrl: n.image_url})) as EmotionNote[] : [];
+      const notes = Array.isArray(data) ? data.map(n => ({ ...n, imageUrl: n.image_url })) as EmotionNote[] : [];
       setEmotionNotes(filterNotesForRoute(notes, activeRouteId));
     } catch (err) {
       console.warn('Failed to load emotion notes:', err);
@@ -568,7 +573,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       const interval = setInterval(loadTeamMembers, 5000);
       return () => clearInterval(interval);
     }
-  }, [teamId, userId, activeRouteId]);
+  }, [teamId, userId, activeRouteId, isCommunityRoute]);
 
   useEffect(() => {
     if (!teamId) return;
@@ -616,6 +621,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       setEmotionNotes([]);
       return;
     }
+    if (!isCommunityRoute) return;
 
     const channelName = teamId ? `team_emotions_live_${teamId}` : `solo_emotions_live_${userId}`;
     const channel = supabase
@@ -637,7 +643,11 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
               return prev.filter(note => note.id !== removed?.id);
             }
 
-            const next = payload.new as EmotionNote;
+            const rawNext = payload.new as any;
+            const next: EmotionNote = {
+              ...rawNext,
+              imageUrl: rawNext?.image_url || rawNext?.imageUrl
+            };
             if (activeRouteId && next.route_id && String(next.route_id) !== String(activeRouteId)) {
               return prev;
             }
@@ -656,7 +666,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [teamId, userId, activeRouteId]);
+  }, [teamId, userId, activeRouteId, isCommunityRoute]);
 
   // Generate AI Highlights when route changes
   useEffect(() => {
@@ -1591,6 +1601,35 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
         }
       }
 
+      if (!isCommunityRoute) {
+        const localNote: EmotionNote = {
+          id: `local-${Date.now()}`,
+          team_id: teamId || null,
+          route_id: activeRouteId || null,
+          user_id: userId,
+          user_name: getSelfDisplayName(),
+          content,
+          latitude: userPos ? userPos[0] : 0,
+          longitude: userPos ? userPos[1] : 0,
+          imageUrl: imageUrl || undefined,
+          created_at: new Date().toISOString()
+        };
+        setEmotionNotes(prev => [...prev, localNote]);
+        setMessages(prev => [...prev, {
+          id: `note-local-${Date.now()}`,
+          sender: 'user',
+          text: `📍 Saved locally: "${content}"`,
+          timestamp: new Date()
+        }]);
+        setToast({ message: 'Saved locally for profile/community upload', type: 'info' });
+        setTimeout(() => setToast(null), 3000);
+        setNoteContent('');
+        setNoteImage(null);
+        setNoteImagePreview(null);
+        setShowAddNote(false);
+        return;
+      }
+
       const payload = {
         team_id: teamId,
         route_id: activeRouteId,
@@ -1684,6 +1723,7 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
           content,
           latitude: userPos ? userPos[0] : 0,
           longitude: userPos ? userPos[1] : 0,
+          imageUrl: imageUrl || undefined,
           created_at: new Date().toISOString()
         };
         setEmotionNotes(prev => [...prev, localNote]);
