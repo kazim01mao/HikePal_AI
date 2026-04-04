@@ -760,7 +760,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                <strong style="color: ${bgColor}; font-size: 14px;">${r.name}</strong>
             </div>
             <div style="font-size: 12px; color: #4b5563; line-height: 1.4;">
-               ${r.ai_prompt || (isRisk ? 'Please be careful in this area.' : 'Facility available here.')}
+               ${isRisk ? 'Please be careful in this area.' : 'Facility available here.'}
             </div>
           </div>
         `;
@@ -1118,7 +1118,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                 <strong style="color: ${bgColor}; font-size: 14px;">${r.name}</strong>
                             </div>
                             <div style="font-size: 12px; color: #4b5563; line-height: 1.4;">
-                                ${r.ai_prompt || (isRisk ? 'Please be careful in this area.' : 'Facility available here.')}
+                                ${isRisk ? 'Please be careful in this area.' : 'Facility available here.'}
                             </div>
                         </div>
                     `;

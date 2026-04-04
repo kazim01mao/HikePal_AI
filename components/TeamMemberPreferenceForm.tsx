@@ -49,6 +49,7 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [showTeamDetails, setShowTeamDetails] = useState(false); // 🆕 显示队伍详情
+  const [isLeavingTeam, setIsLeavingTeam] = useState(false);
   const [nicknameTouched, setNicknameTouched] = useState(false);
 
   // 获取当前用户信息
@@ -325,6 +326,82 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
     }
   };
 
+  const handleLeaveTeam = async () => {
+    if (isLeavingTeam) return;
+    const confirmed = window.confirm('Are you sure you want to leave this team?');
+    if (!confirmed) return;
+
+    setIsLeavingTeam(true);
+    setSubmitError(null);
+    try {
+      const localMemberId = typeof window !== 'undefined'
+        ? localStorage.getItem(`hikepal_team_member_id_${teamId}`) || ''
+        : '';
+      const candidateUserIds = Array.from(
+        new Set([currentUser?.id, localMemberId].filter(Boolean) as string[])
+      );
+      const candidateEmails = Array.from(
+        new Set([memberEmail, currentUser?.email].map(v => String(v || '').trim()).filter(Boolean))
+      );
+
+      let removedCount = 0;
+
+      for (const uid of candidateUserIds) {
+        const { data: deletedRows, error: delError } = await supabase
+          .from('team_members')
+          .delete()
+          .eq('team_id', teamId)
+          .eq('user_id', uid)
+          .select('id');
+        if (delError) throw delError;
+        removedCount += deletedRows?.length || 0;
+      }
+
+      if (removedCount === 0) {
+        for (const email of candidateEmails) {
+          const { data: deletedRows, error: delError } = await supabase
+            .from('team_members')
+            .delete()
+            .eq('team_id', teamId)
+            .ilike('user_email', email)
+            .select('id');
+          if (delError) throw delError;
+          removedCount += deletedRows?.length || 0;
+        }
+      }
+
+      if (removedCount === 0) {
+        throw new Error('Unable to find your team membership record.');
+      }
+
+      const { data: remainingMembers, error: remainingError } = await supabase
+        .from('team_members')
+        .select('id')
+        .eq('team_id', teamId);
+      if (remainingError) throw remainingError;
+
+      const updatedSize = Array.isArray(remainingMembers) ? remainingMembers.length : 0;
+      const { error: teamUpdateError } = await supabase
+        .from('teams')
+        .update({ team_size: updatedSize })
+        .eq('id', teamId);
+      if (teamUpdateError) throw teamUpdateError;
+
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(`hikepal_team_member_id_${teamId}`);
+        localStorage.removeItem(`hikepal_team_member_name_${teamId}`);
+      }
+
+      alert('You have left the team.');
+      if (onBack) onBack();
+    } catch (error: any) {
+      console.error('❌ Error leaving team:', error);
+      setSubmitError(formatUnknownError(error));
+    } finally {
+      setIsLeavingTeam(false);
+    }
+  };
+
   if (showTeamDetails) {
     return (
       <TeamDetailsView
@@ -337,6 +414,8 @@ const TeamMemberPreferenceForm: React.FC<TeamMemberPreferenceFormProps> = ({
           setSubmitSuccess(false);
           setSubmitError(null);
         }}
+        onLeaveTeam={handleLeaveTeam}
+        isLeavingTeam={isLeavingTeam}
         onBack={() => {
           if (onBack) onBack();
         }}

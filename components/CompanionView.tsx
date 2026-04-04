@@ -88,6 +88,10 @@ function getWaypointGlyph(note: any, imageUrl?: string): string {
   if (imageUrl) return '📸';
   const text = String(note || '').trim();
   if (!text) return '🙂';
+  // Keep Scenic emotion markers distinct from facility/photo markers.
+  if (text.toLowerCase().includes('scenic')) return '🏞️';
+  // Keep Great emotion markers distinct from cliff/risk markers.
+  if (text.toLowerCase().includes('great')) return '👍';
   const emojiMatch = text.match(/(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*)/u);
   if (emojiMatch?.[1]) return emojiMatch[1];
   const first = Array.from(text)[0];
@@ -1101,7 +1105,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                <strong style="color: ${bgColor}; font-size: 14px;">${r.name}</strong>
             </div>
             <div style="font-size: 12px; color: #4b5563; line-height: 1.4;">
-               ${r.ai_prompt || (isRisk ? 'Please be careful in this area.' : 'Facility available here.')}
+               ${isRisk ? 'Please be careful in this area.' : 'Facility available here.'}
             </div>
           </div>
         `;
@@ -2272,7 +2276,7 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
                  </div>
                  
                  <div className="flex flex-wrap gap-2">
-                    {['🏔️ Great', '😴 Tired', '📸 Scenic', '💧 Need Water'].map(tag => (
+                    {['👍 Great', '😴 Tired', '🏞️ Scenic', '💧 Need Water'].map(tag => (
                       <button
                         key={tag}
                         onClick={() => setNoteContent(prev => (prev ? `${prev} ${tag}` : tag))}
@@ -2339,7 +2343,9 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
                                 </div>
                                 <div className="select-text">
                                    <div className="text-sm font-bold text-gray-900 mb-1 select-text">{r.name}</div>
-                                   <p className="text-xs text-gray-500 italic select-text">"{r.ai_prompt}"</p>
+                                   <p className="text-xs text-gray-500 italic select-text">
+                                      {r.category?.toLowerCase() === 'risk' ? 'Risk reminder nearby.' : 'Facility reminder nearby.'}
+                                   </p>
                                 </div>
                              </div>
                           ))}
