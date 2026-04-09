@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { supabase, mockLogin } from '../utils/supabaseClient';
 import { AuthMode, User } from '../types';
 import { getOrCreateGuestNickname } from '../utils/guestIdentity';
+import HikePalLogo from './HikePalLogo';
 // inline Button and Input components (originally in ui folder)
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -81,7 +82,7 @@ const Input: React.FC<InputProps> = ({ label, error, icon, className = '', ...pr
     </div>
   );
 };
-import { Mail, Lock, Mountain, AlertCircle } from 'lucide-react';
+import { Mail, Lock, AlertCircle } from 'lucide-react';
 
 interface AuthPageProps {
   onLoginSuccess: (user: User) => void;
@@ -183,7 +184,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
       <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl p-8 z-10">
         <div className="flex flex-col items-center mb-8">
           <div className="bg-hike-light p-4 rounded-2xl mb-4">
-            <Mountain className="h-12 w-12 text-hike-green" />
+            <HikePalLogo className="h-12 w-12 text-hike-green" />
           </div>
           <h1 className="text-3xl font-black text-stone-800">HikePal</h1>
           <p className="text-stone-500">HK Hiking AI Assistant</p>

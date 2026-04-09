@@ -7,7 +7,9 @@ import PlanningView from './components/PlanningView';
 import CompanionView from './components/CompanionView';
 import HomeView from './components/HomeView';
 import TeamMemberPreferenceForm from './components/TeamMemberPreferenceForm';
-import { Map, User as UserIcon, Compass } from 'lucide-react';
+import HikePalLogo from './components/HikePalLogo';
+import { User as UserIcon, Compass } from 'lucide-react';
+import { useHikeStore } from './store/hikeStore';
 import { uploadRouteToCommunity } from './services/segmentRoutingService';
 interface AppState {
   error: string | null;
@@ -52,6 +54,10 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, AppSt
   }
 }
 const App: React.FC = () => {
+  const resetCompanionSession = () => {
+    useHikeStore.getState().reset();
+  };
+
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>(Tab.PLANNING);
   const [exploreKey, setExploreKey] = useState(0);
@@ -702,6 +708,7 @@ const App: React.FC = () => {
   };
 
   const handleRouteSelection = (route: Route) => {
+    resetCompanionSession();
     setActiveRoute(route);
     // 🆕 如果 route 对象中携带了队长标志，则同步更新 App 的状态
     if ((route as any).isLeader !== undefined) {
@@ -718,6 +725,7 @@ const App: React.FC = () => {
 
   // 🆕 回顾历史记录
   const handleReviewTrack = (track: Track) => {
+    resetCompanionSession();
     const normalizeLatLng = (a: any, b: any): [number, number] | null => {
       if (typeof a !== 'number' || typeof b !== 'number') return null;
       if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
@@ -869,6 +877,7 @@ const App: React.FC = () => {
            route.coordinates = DRAGONS_BACK_COORDINATES;
         }
         
+        resetCompanionSession();
         setActiveRoute(route);
         setSelectedTeamId(teamId);
         setIsLeader(teamData.created_by === user?.id);
@@ -907,16 +916,18 @@ const App: React.FC = () => {
             return;
           }
           if (activeTab === Tab.PLANNING) {
+             resetCompanionSession();
              setSelectedTeamId(undefined);
              setActiveRoute(null);
              setExploreKey(prev => prev + 1);
           } else {
+             resetCompanionSession();
              setActiveTab(Tab.PLANNING);
              setSelectedTeamId(undefined);
              setActiveRoute(null);
           }
         }} 
-        className={(!teamIdFromUrl && activeTab === Tab.PLANNING) ? 'text-hike-green' : 'text-gray-400'}
+        className={`flex flex-col items-center gap-1 transition-colors ${(!teamIdFromUrl && activeTab === Tab.PLANNING) ? 'text-hike-green' : 'text-gray-400'}`}
       >
         <Compass size={24} /><span className="text-[10px]">Explore</span>
       </button>
@@ -925,9 +936,9 @@ const App: React.FC = () => {
           if (teamIdFromUrl) return;
           setActiveTab(Tab.COMPANION);
         }} 
-        className={(!teamIdFromUrl && activeTab === Tab.COMPANION) || teamIdFromUrl ? 'text-hike-green' : 'text-gray-400'}
+        className={`flex flex-col items-center gap-1 transition-colors ${((!teamIdFromUrl && activeTab === Tab.COMPANION) || teamIdFromUrl) ? 'text-hike-green' : 'text-gray-400'}`}
       >
-        <Map size={24} /><span className="text-[10px]">HikePal AI</span>
+        <HikePalLogo className="shrink-0" size={24} /><span className="text-[10px]">HikePal AI</span>
       </button>
       <button 
         onClick={() => {
@@ -938,7 +949,7 @@ const App: React.FC = () => {
           }
           setActiveTab(Tab.HOME);
         }} 
-        className={(!teamIdFromUrl && activeTab === Tab.HOME) ? 'text-hike-green' : 'text-gray-400'}
+        className={`flex flex-col items-center gap-1 transition-colors ${(!teamIdFromUrl && activeTab === Tab.HOME) ? 'text-hike-green' : 'text-gray-400'}`}
       >
         <UserIcon size={24} /><span className="text-[10px]">Profile</span>
       </button>
@@ -1097,7 +1108,8 @@ const App: React.FC = () => {
                       route.coordinates = DRAGONS_BACK_COORDINATES; 
                    }
 
-                   setGuestActiveRoute(route);
+                  resetCompanionSession();
+                  setGuestActiveRoute(route);
                  } else {
                    alert('Route not confirmed yet. Please wait for the captain.');
                  }
@@ -1151,11 +1163,13 @@ const App: React.FC = () => {
         
         {activeTab === Tab.COMPANION && (
           <CompanionView 
+            key={`companion-${activeRoute?.id || 'no-route'}-${selectedTeamId || 'solo'}-${(activeRoute as any)?.isReview ? 'review' : 'hike'}`}
             user={user}
             activeRoute={activeRoute}
             onSaveTrack={(track) => {
                handleSaveTrack(track);
                // Force navigation back to Planning (Explore) tab upon completion
+               resetCompanionSession();
                setActiveTab(Tab.PLANNING);
                setActiveRoute(null);
             }}
@@ -1178,6 +1192,7 @@ const App: React.FC = () => {
                   );
                 }
               }
+              resetCompanionSession();
               setActiveTab(Tab.PLANNING);
               setActiveRoute(null);
             }}
@@ -1241,6 +1256,7 @@ const App: React.FC = () => {
                     route.coordinates = DRAGONS_BACK_COORDINATES;
                   }
 
+                  resetCompanionSession();
                   setActiveRoute(route);
                   setIsLeader(false);
                   setSelectedTeamId(teamId);

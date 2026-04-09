@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User, UserStats, Track, GroupHike } from '../types';
 import { Settings, QrCode, Map, Clock, Zap, Activity, Share2, Users, Trash2, LogOut, Flame, Mountain, AlertCircle, Loader, Compass, History as HistoryIcon, Info } from 'lucide-react';
+import HikePalLogo from './HikePalLogo';
 import { supabase } from '../utils/supabaseClient';
 import { createTeam } from '../services/teamService';
 import { mergeSegmentCoordinates, fetchRouteById } from '../services/segmentRoutingService';
@@ -684,7 +685,14 @@ const HomeView: React.FC<HomeViewProps> = ({ user, onLogout, myTracks, myGroupHi
 	              </div>
 
 	              <div className="relative z-10 px-5 sm:px-6 pt-5 pb-6">
-	                <div className="flex justify-end gap-2.5 mb-4">
+	                <div className="flex items-center justify-between gap-3 mb-4">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-hike-light shadow-sm">
+                        <HikePalLogo className="text-hike-green" size={26} />
+                      </div>
+                      <span className="text-xl font-black tracking-[-0.02em] text-gray-900">HikePal</span>
+                    </div>
+                    <div className="flex gap-2.5">
 	                  <button
 	                    onClick={() => setShowEditProfile(true)}
 	                    className="h-11 w-11 rounded-full bg-white/80 backdrop-blur-xl border border-white/80 text-gray-700 shadow-[0_8px_20px_rgba(0,0,0,0.06)] active:scale-95 transition-transform flex items-center justify-center"
@@ -697,6 +705,7 @@ const HomeView: React.FC<HomeViewProps> = ({ user, onLogout, myTracks, myGroupHi
 	                  >
 	                    <LogOut size={20}/>
 	                  </button>
+                    </div>
 	                </div>
 
 	                <div className="flex flex-col items-center text-center">

@@ -264,6 +264,12 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [isGeneratingPreHikeAdvice, setIsGeneratingPreHikeAdvice] = useState(false);
   const activeRouteId = activeRoute?.id || null;
   const preHikeAdviceKeyRef = useRef<string | null>(null);
+  const clearHikeTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
 
   const appendRecordedPoint = (nextPoint: [number, number]) => {
     setRecordedPath(prev => {
@@ -1313,8 +1319,15 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       }
       setToast({ message: `Started ${hikeMode === 'scrubbing' ? 'virtual' : 'live'} hike!`, type: 'success' });
       setTimeout(() => setToast(null), 3000);
+      return;
     }
+    setIsRecording(false);
+    clearHikeTimer();
   }, [hikeMode, activeRoute]);
+
+  useEffect(() => () => {
+    clearHikeTimer();
+  }, []);
 
   const handleSendMessage = async (text?: string) => {
     const finalMsg = text || inputText;
