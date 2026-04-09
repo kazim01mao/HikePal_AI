@@ -1,7 +1,3 @@
-这是一份根据你提供的《HikePal》终期报告整理的 GitHub README.md 模板。它涵盖了项目的核心架构、技术栈、功能亮点以及数据处理流程。
-
----
-
 # HikePal: Generative AI-Powered Hiking Companion
 
 [cite_start]**HikePal** 是一款基于生成式 AI 的远足辅助平台，旨在将传统的静态地图工具演进为主动、共情的数字伙伴 [cite: 165][cite_start]。本项目专注于解决群体登山决策冲突、动态安全风险以及社区参与感缺失等核心痛点，特别针对香港复杂的远足径网络进行了优化 [cite: 163, 168]。
