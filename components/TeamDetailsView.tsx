@@ -29,6 +29,8 @@ interface TeamDetailsViewProps {
   onBack?: () => void;
   onStartHike?: () => void;
   onEditPreferences?: () => void;
+  onLeaveTeam?: () => void;
+  isLeavingTeam?: boolean;
   isTeamLeader?: boolean;
 }
 
@@ -40,6 +42,8 @@ const TeamDetailsView: React.FC<TeamDetailsViewProps> = ({
   onBack,
   onStartHike,
   onEditPreferences,
+  onLeaveTeam,
+  isLeavingTeam = false,
   isTeamLeader = false,
 }) => {
   const [members, setMembers] = useState<TeamMember[]>([]);
@@ -208,9 +212,23 @@ const TeamDetailsView: React.FC<TeamDetailsViewProps> = ({
                     {onEditPreferences && (
                       <button
                         onClick={onEditPreferences}
+                        disabled={isLeavingTeam}
                         className="w-full mt-2 bg-white text-gray-700 font-bold py-3 rounded-xl border border-gray-300 shadow-sm active:scale-95 transition-transform"
                       >
                         Edit / Complete My Preferences
+                      </button>
+                    )}
+                    {onLeaveTeam && (
+                      <button
+                        onClick={onLeaveTeam}
+                        disabled={isLeavingTeam}
+                        className={`w-full mt-2 font-bold py-3 rounded-xl border shadow-sm transition-transform ${
+                          isLeavingTeam
+                            ? 'bg-red-50 text-red-300 border-red-200 cursor-not-allowed'
+                            : 'bg-white text-red-600 border-red-200 active:scale-95'
+                        }`}
+                      >
+                        {isLeavingTeam ? 'Leaving Team...' : 'Leave Team'}
                       </button>
                     )}
                   </>
@@ -227,9 +245,23 @@ const TeamDetailsView: React.FC<TeamDetailsViewProps> = ({
               {onEditPreferences && (
                 <button
                   onClick={onEditPreferences}
+                  disabled={isLeavingTeam}
                   className="w-full mt-2 bg-white text-gray-700 font-bold py-3 rounded-xl border border-gray-300 shadow-sm active:scale-95 transition-transform"
                 >
                   Edit / Complete My Preferences
+                </button>
+              )}
+              {onLeaveTeam && (
+                <button
+                  onClick={onLeaveTeam}
+                  disabled={isLeavingTeam}
+                  className={`w-full mt-2 font-bold py-3 rounded-xl border shadow-sm transition-transform ${
+                    isLeavingTeam
+                      ? 'bg-red-50 text-red-300 border-red-200 cursor-not-allowed'
+                      : 'bg-white text-red-600 border-red-200 active:scale-95'
+                  }`}
+                >
+                  {isLeavingTeam ? 'Leaving Team...' : 'Leave Team'}
                 </button>
               )}
             </>

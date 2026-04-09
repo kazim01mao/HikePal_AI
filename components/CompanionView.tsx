@@ -88,6 +88,10 @@ function getWaypointGlyph(note: any, imageUrl?: string): string {
   if (imageUrl) return '📸';
   const text = String(note || '').trim();
   if (!text) return '🙂';
+  // Keep Scenic emotion markers distinct from facility/photo markers.
+  if (text.toLowerCase().includes('scenic')) return '🏞️';
+  // Keep Great emotion markers distinct from cliff/risk markers.
+  if (text.toLowerCase().includes('great')) return '👍';
   const emojiMatch = text.match(/(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*)/u);
   if (emojiMatch?.[1]) return emojiMatch[1];
   const first = Array.from(text)[0];
@@ -260,6 +264,12 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const [isGeneratingPreHikeAdvice, setIsGeneratingPreHikeAdvice] = useState(false);
   const activeRouteId = activeRoute?.id || null;
   const preHikeAdviceKeyRef = useRef<string | null>(null);
+  const clearHikeTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
 
   const appendRecordedPoint = (nextPoint: [number, number]) => {
     setRecordedPath(prev => {
@@ -290,6 +300,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<any>(null);
   const isReviewMode = !!(activeRoute as any)?.isReview;
+  const isCommunityRoute = !!(activeRoute as any)?.isUserPublished;
 
   const getTeamMemberNameStorageKey = (id: string) => `hikepal_team_member_name_${id}`;
 
@@ -470,6 +481,10 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       setEmotionNotes([]);
       return;
     }
+    if (!isCommunityRoute) {
+      setEmotionNotes([]);
+      return;
+    }
 
     try {
       const scopeCol = 'id, team_id, route_id, user_id, user_name, content, latitude, longitude, image_url, created_at';
@@ -517,7 +532,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       }
       
       if (error) throw error;
-      const notes = Array.isArray(data) ? data.map(n => ({...n, imageUrl: n.image_url})) as EmotionNote[] : [];
+      const notes = Array.isArray(data) ? data.map(n => ({ ...n, imageUrl: n.image_url })) as EmotionNote[] : [];
       setEmotionNotes(filterNotesForRoute(notes, activeRouteId));
     } catch (err) {
       console.warn('Failed to load emotion notes:', err);
@@ -564,7 +579,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       const interval = setInterval(loadTeamMembers, 5000);
       return () => clearInterval(interval);
     }
-  }, [teamId, userId, activeRouteId]);
+  }, [teamId, userId, activeRouteId, isCommunityRoute]);
 
   useEffect(() => {
     if (!teamId) return;
@@ -612,6 +627,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       setEmotionNotes([]);
       return;
     }
+    if (!isCommunityRoute) return;
 
     const channelName = teamId ? `team_emotions_live_${teamId}` : `solo_emotions_live_${userId}`;
     const channel = supabase
@@ -633,7 +649,11 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
               return prev.filter(note => note.id !== removed?.id);
             }
 
-            const next = payload.new as EmotionNote;
+            const rawNext = payload.new as any;
+            const next: EmotionNote = {
+              ...rawNext,
+              imageUrl: rawNext?.image_url || rawNext?.imageUrl
+            };
             if (activeRouteId && next.route_id && String(next.route_id) !== String(activeRouteId)) {
               return prev;
             }
@@ -652,7 +672,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [teamId, userId, activeRouteId]);
+  }, [teamId, userId, activeRouteId, isCommunityRoute]);
 
   // Generate AI Highlights when route changes
   useEffect(() => {
@@ -1101,7 +1121,7 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
                <strong style="color: ${bgColor}; font-size: 14px;">${r.name}</strong>
             </div>
             <div style="font-size: 12px; color: #4b5563; line-height: 1.4;">
-               ${r.ai_prompt || (isRisk ? 'Please be careful in this area.' : 'Facility available here.')}
+               ${isRisk ? 'Please be careful in this area.' : 'Facility available here.'}
             </div>
           </div>
         `;
@@ -1299,8 +1319,15 @@ const CompanionView: React.FC<CompanionViewProps> = ({ user, activeRoute, onSave
       }
       setToast({ message: `Started ${hikeMode === 'scrubbing' ? 'virtual' : 'live'} hike!`, type: 'success' });
       setTimeout(() => setToast(null), 3000);
+      return;
     }
+    setIsRecording(false);
+    clearHikeTimer();
   }, [hikeMode, activeRoute]);
+
+  useEffect(() => () => {
+    clearHikeTimer();
+  }, []);
 
   const handleSendMessage = async (text?: string) => {
     const finalMsg = text || inputText;
@@ -1587,6 +1614,35 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
         }
       }
 
+      if (!isCommunityRoute) {
+        const localNote: EmotionNote = {
+          id: `local-${Date.now()}`,
+          team_id: teamId || null,
+          route_id: activeRouteId || null,
+          user_id: userId,
+          user_name: getSelfDisplayName(),
+          content,
+          latitude: userPos ? userPos[0] : 0,
+          longitude: userPos ? userPos[1] : 0,
+          imageUrl: imageUrl || undefined,
+          created_at: new Date().toISOString()
+        };
+        setEmotionNotes(prev => [...prev, localNote]);
+        setMessages(prev => [...prev, {
+          id: `note-local-${Date.now()}`,
+          sender: 'user',
+          text: `📍 Saved locally: "${content}"`,
+          timestamp: new Date()
+        }]);
+        setToast({ message: 'Saved locally for profile/community upload', type: 'info' });
+        setTimeout(() => setToast(null), 3000);
+        setNoteContent('');
+        setNoteImage(null);
+        setNoteImagePreview(null);
+        setShowAddNote(false);
+        return;
+      }
+
       const payload = {
         team_id: teamId,
         route_id: activeRouteId,
@@ -1680,6 +1736,7 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
           content,
           latitude: userPos ? userPos[0] : 0,
           longitude: userPos ? userPos[1] : 0,
+          imageUrl: imageUrl || undefined,
           created_at: new Date().toISOString()
         };
         setEmotionNotes(prev => [...prev, localNote]);
@@ -2272,7 +2329,7 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
                  </div>
                  
                  <div className="flex flex-wrap gap-2">
-                    {['🏔️ Great', '😴 Tired', '📸 Scenic', '💧 Need Water'].map(tag => (
+                    {['👍 Great', '😴 Tired', '🏞️ Scenic', '💧 Need Water'].map(tag => (
                       <button
                         key={tag}
                         onClick={() => setNoteContent(prev => (prev ? `${prev} ${tag}` : tag))}
@@ -2339,7 +2396,9 @@ Output in English, concise, actionable, and DO NOT exceed 60 words.`;
                                 </div>
                                 <div className="select-text">
                                    <div className="text-sm font-bold text-gray-900 mb-1 select-text">{r.name}</div>
-                                   <p className="text-xs text-gray-500 italic select-text">"{r.ai_prompt}"</p>
+                                   <p className="text-xs text-gray-500 italic select-text">
+                                      {r.category?.toLowerCase() === 'risk' ? 'Risk reminder nearby.' : 'Facility reminder nearby.'}
+                                   </p>
                                 </div>
                              </div>
                           ))}

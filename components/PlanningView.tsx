@@ -760,7 +760,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                <strong style="color: ${bgColor}; font-size: 14px;">${r.name}</strong>
             </div>
             <div style="font-size: 12px; color: #4b5563; line-height: 1.4;">
-               ${r.ai_prompt || (isRisk ? 'Please be careful in this area.' : 'Facility available here.')}
+               ${isRisk ? 'Please be careful in this area.' : 'Facility available here.'}
             </div>
           </div>
         `;
@@ -1012,13 +1012,16 @@ const PlanningView: React.FC<PlanningViewProps> = ({
 
         // Render waypoints if present (Community Routes)
         const waypoints = (activeRoute as any).waypoints;
-        if (waypoints && Array.isArray(waypoints)) {
+        const showCommunityWaypoints = !!(activeRoute as any).isUserPublished;
+        if (showCommunityWaypoints && waypoints && Array.isArray(waypoints)) {
             waypoints.forEach((wp: any) => {
                 if (wp && typeof wp.lat === 'number' && typeof wp.lng === 'number') {
                     const isPhoto = wp.type === 'photo';
                     const isEmotion = wp.type === 'emotion';
                     const bgColor = isPhoto ? '#3B82F6' : isEmotion ? '#EA580C' : '#F59E0B';
-                    const markerText = isEmotion && wp.imageUrl ? '📸' : isEmotion ? '📝' : isPhoto ? '📸' : '📍';
+                    const waypointImage = wp?.imageUrl || wp?.image_url || wp?.photoUrl || wp?.photo_url || wp?.url || '';
+                    const hasImage = typeof waypointImage === 'string' && waypointImage.trim().length > 0;
+                    const markerText = isEmotion && hasImage ? '📸' : isEmotion ? '📝' : isPhoto ? '📸' : '📍';
                     const icon = L.divIcon({
                         className: 'waypoint-icon',
                         html: `<div style="background-color: ${bgColor}; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; font-size:10px;">${markerText}</div>`,
@@ -1032,7 +1035,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                         <div style="font-size: 14px; font-weight: bold; color: ${bgColor}; margin-bottom: 4px;">
                           ${escaped(wp.note || (isPhoto ? 'Photo Spot' : isEmotion ? 'Emotion Note' : 'Waypoint'))}
                         </div>
-                        ${wp.imageUrl ? `<img src="${escaped(wp.imageUrl)}" alt="Waypoint Image" style="width: 100%; border-radius: 8px; margin-bottom: 8px; max-height: 120px; object-fit: cover;" />` : ''}
+                        ${hasImage ? `<img src="${escaped(waypointImage)}" alt="Waypoint Image" style="width: 100%; border-radius: 8px; margin-bottom: 8px; max-height: 120px; object-fit: cover;" />` : ''}
                       </div>
                     `;
                     
@@ -1118,7 +1121,7 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                                 <strong style="color: ${bgColor}; font-size: 14px;">${r.name}</strong>
                             </div>
                             <div style="font-size: 12px; color: #4b5563; line-height: 1.4;">
-                                ${r.ai_prompt || (isRisk ? 'Please be careful in this area.' : 'Facility available here.')}
+                                ${isRisk ? 'Please be careful in this area.' : 'Facility available here.'}
                             </div>
                         </div>
                     `;
@@ -2943,9 +2946,28 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                         <h4 className="text-xs text-gray-500 font-bold uppercase tracking-widest mb-3">Community Waypoints</h4>
                         <div className="space-y-2">
                           {((activeRoute as any).waypoints).slice(0, 3).map((wp: any, idx: number) => (
-                            <div key={idx} className="flex items-center gap-2 text-sm text-gray-700 bg-white p-2 rounded-lg border border-gray-100">
-                              <span className={wp.type === 'photo' ? 'text-blue-500' : 'text-red-500'}>{wp.type === 'photo' ? '📷' : '📍'}</span>
-                              <span className="truncate flex-1">{wp.note || 'Waypoint'}</span>
+                            <div key={idx} className="text-sm text-gray-700 bg-white p-2.5 rounded-lg border border-gray-100">
+                              {(() => {
+                                const waypointImage = wp?.imageUrl || wp?.image_url || wp?.photoUrl || wp?.photo_url || wp?.url || null;
+                                const hasImage = typeof waypointImage === 'string' && waypointImage.trim().length > 0;
+                                const isPhoto = wp?.type === 'photo' || hasImage;
+                                return (
+                                  <div className="flex items-start gap-2">
+                                    <span className={isPhoto ? 'text-blue-500' : 'text-red-500'}>{isPhoto ? '📷' : '📍'}</span>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="text-sm text-gray-700 break-words">{wp?.note || 'Waypoint'}</div>
+                                      {hasImage && (
+                                        <img
+                                          src={waypointImage}
+                                          alt={`Waypoint ${idx + 1}`}
+                                          className="mt-2 w-full max-w-[220px] h-28 object-cover rounded-md border border-gray-200"
+                                          loading="lazy"
+                                        />
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })()}
                             </div>
                           ))}
                           {((activeRoute as any).waypoints).length > 3 && (
