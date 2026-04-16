@@ -38,8 +38,6 @@ import {
   ArrowLeft,
   Plus,
   Flag,
-  Recycle,
-  ShieldAlert,
   Share2,
   Compass,
   Sparkles,
@@ -1819,11 +1817,28 @@ const PlanningView: React.FC<PlanningViewProps> = ({
                   <h2 className="text-xl font-bold">Community Events</h2>
               </div>
               <div className="p-4 space-y-4 overflow-y-auto pb-20">
-                  <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl text-blue-800 text-sm flex items-start gap-3">
-                      <ShieldAlert size={20} className="shrink-0 mt-0.5" />
-                      <div>
-                          <span className="font-bold">Official Activities</span>
-                          <p className="text-blue-600/80 text-xs mt-1">Earn badges and points by participating in conservation efforts.</p>
+                  <div className="relative overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-lime-50 to-white p-4 shadow-[0_10px_24px_rgba(22,101,52,0.12)]">
+                      <div className="pointer-events-none absolute inset-y-0 right-0 w-24 bg-gradient-to-l from-lime-200/20 to-transparent" />
+                      <div className="relative z-10 flex items-center gap-4">
+                          <div className="relative h-20 w-20 shrink-0">
+                              <div
+                                  className="absolute inset-0 bg-gradient-to-b from-emerald-200 via-emerald-300 to-emerald-500 shadow-[0_8px_16px_rgba(16,185,129,0.22)]"
+                                  style={{ clipPath: 'polygon(50% 0%, 88% 14%, 88% 56%, 50% 100%, 12% 56%, 12% 14%)' }}
+                              />
+                              <div
+                                  className="absolute inset-[7px] border border-white/80 bg-emerald-300/90 flex items-center justify-center"
+                                  style={{ clipPath: 'polygon(50% 2%, 84% 16%, 84% 54%, 50% 96%, 16% 54%, 16% 16%)' }}
+                              >
+                                  <Mountain size={24} className="-translate-y-1 text-white drop-shadow-[0_2px_3px_rgba(0,0,0,0.25)]" />
+                              </div>
+                          </div>
+                          <div className="min-w-0">
+                              <span className="inline-flex rounded-full border border-emerald-300 bg-white px-2 py-0.5 text-[10px] font-bold tracking-wider text-emerald-700">
+                                  GREEN MISSION BADGE
+                              </span>
+                              <p className="mt-1 text-base font-extrabold tracking-tight text-emerald-900">Eco Guardian</p>
+                              <p className="mt-1 text-xs text-emerald-700/90">Participate in more events to earn more badges.</p>
+                          </div>
                       </div>
                   </div>
 
