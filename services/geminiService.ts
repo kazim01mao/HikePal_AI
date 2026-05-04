@@ -1,51 +1,36 @@
-type QwenChatMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
-};
-
 type QwenChatResponse = {
   choices?: Array<{
     message?: { content?: string };
   }>;
 };
 
-const QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const DEFAULT_QWEN_MODEL =
   import.meta.env.VITE_QWEN_MODEL ||
   (typeof process !== "undefined" ? process.env.QWEN_MODEL : null) ||
   "qwen-plus";
 
-const getQwenApiKey = (): string => {
-  const apiKey =
-    (typeof process !== "undefined" ? process.env.QWEN_API_KEY : null) ||
-    import.meta.env.VITE_QWEN_API_KEY ||
-    import.meta.env.VITE_API_KEY;
-
-  if (!apiKey) {
-    console.warn("⚠️ [QwenService] API Key is missing! AI features will be disabled.");
-    console.warn("👉 To fix this: set 'QWEN_API_KEY' (server) or 'VITE_QWEN_API_KEY' (client).");
-    throw new Error("API Key missing");
-  }
-  return apiKey;
-};
-
 /**
  * 通用 Qwen 请求函数（OpenAI 兼容格式）
  */
 async function qwenRequest<T>(path: string, body: Record<string, any>): Promise<T> {
-  const apiKey = getQwenApiKey();
-  const response = await fetch(`${QWEN_BASE_URL}${path}`, {
+  // 直接请求你本地的 Netlify 函数代理地址
+  // 注意：我们将原本的 path 作为一个参数传给我们的代理函数，或者由代理函数固定处理
+  const response = await fetch("/.netlify/functions/qwen-proxy", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+      // 这里不再需要 Authorization Header，因为 Key 锁在云端后端
     },
-    body: JSON.stringify(body),
+    // 将原本要发给 Qwen 的 path 和 body 一起打包发给代理函数
+    body: JSON.stringify({
+      path: path, // 告诉代理函数你想访问 Qwen 的哪个具体路径
+      ...body     // 展开原本的请求体（包含 model, input 等）
+    }),
   });
 
   if (!response.ok) {
     const errText = await response.text().catch(() => "");
-    throw new Error(`Qwen API Error (${response.status}): ${errText || response.statusText}`);
+    throw new Error(`Proxy API Error (${response.status}): ${errText || response.statusText}`);
   }
 
   return (await response.json()) as T;
@@ -66,12 +51,6 @@ export const generateHikingAdvice = async (
   }
 ): Promise<string> => {
   try {
-    try {
-      getQwenApiKey();
-    } catch (e) {
-      return "⚠️ AI Guide is currently in offline mode (API Key missing). Please check environment variables.";
-    }
-
     // System instruction to act as a hiking guide
     const systemInstruction = `You are HikePal AI, an expert hiking guide for Hong Kong trails. 
     Current User Context:
@@ -121,13 +100,6 @@ export const generateRoutesWithAI = async (
   weatherContext?: { temp?: number; humidity?: number; condition?: string; rainfallMm?: number; sunrise?: string; sunset?: string }
 ): Promise<any[]> => {
   try {
-    try {
-      getQwenApiKey();
-    } catch (e) {
-      console.warn("Falling back to local route generation (API Key missing)");
-      return []; // Return empty to trigger local DB fallback in segmentRoutingService
-    }
-    
     // 🆕 如果没有 segments，生成默认推荐路线
     if (!segments || segments.length === 0) {
       console.log('⚠️ No segments available, generating default recommendations...');
@@ -295,12 +267,6 @@ export const rankRoutesWithAI = async (
   weatherContext?: { temp?: number; humidity?: number; condition?: string; rainfallMm?: number }
 ): Promise<any[]> => {
   try {
-    try {
-      getQwenApiKey();
-    } catch (e) {
-      return []; // Fallback to local scoring
-    }
-    
     // 简化 routes 数据，只包含关键信息
     const routesInfo = routes.map(r => ({
       id: r.id,
@@ -370,12 +336,6 @@ export const generateRouteHighlights = async (
   reminders: any[]
 ): Promise<string> => {
   try {
-    try {
-      getQwenApiKey();
-    } catch (e) {
-      return "Scenic views and fresh air along the trail.";
-    }
-    
     const prompt = `You are a professional hiking guide. Based on the trail information and points of interest below, generate 3-5 high-quality "Route Highlights".
     Each highlight should be a short, punchy sentence (max 15 words) with an appropriate emoji.
     
@@ -443,12 +403,6 @@ const buildReminderFallback = (params: ReminderReplyParams): string => {
 
 export const generateReminderReply = async (params: ReminderReplyParams): Promise<string> => {
   try {
-    try {
-      getQwenApiKey();
-    } catch (e) {
-      return buildReminderFallback(params);
-    }
-
     const prompt = `You are HikePal AI sending a LIVE reminder to a hiker.
 
 Important policy:
